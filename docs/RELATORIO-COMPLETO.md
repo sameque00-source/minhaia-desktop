@@ -70,21 +70,22 @@ A tela final substitui os números de exemplo por uma saudação e ações que p
 
 ## 7. Git, backup e GitHub
 
-- Branch atual: `claude/elegant-lovelace-slefxv`.
-- `origin` atual continua em `https://github.com/sameque00-source/Minha-ia.git`.
-- O checkout contém mudanças locais significativas e não publicadas; não houve commit ou push.
-- Backup recuperável finalizado e verificado em `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-000352Z-final`, com cópia final da árvore e `historico-git.bundle`; tamanhos e contagens constam em `manifest.txt` no próprio backup. Segredos, dependências, `dist/` e conteúdo gerado foram excluídos da cópia de trabalho; o repositório local original permaneceu intacto.
-- A CLI respondeu que não há sessão GitHub autenticada. O destino `sameque00-source/minhaia-desktop` respondeu 404 na consulta pública; isso não permite descartar que exista como privado. A página pública do repositório antigo foi confirmada.
-- Nenhuma criação, clonagem, troca de `origin`, push ou exclusão remota foi realizada. O repositório antigo permanece intacto.
+- Em 21/10/2026, a autenticação `gh` foi confirmada para `sameque00-source`, com escopo `repo` e permissão `ADMIN` nos repositórios.
+- A origem `sameque00-source/Minha-ia` era pública. O destino inexistente `sameque00-source/minhaia-desktop` foi criado público para manter a visibilidade.
+- O commit `682fba334b0477c03e19f97d64ba8e8e7daa9bd6` contém a árvore local preservada (57 arquivos alterados/adicionados); foi publicado em `main` sem force push. O histórico anterior da branch de origem foi preservado.
+- A clonagem limpa em `C:\Users\sameq\Downloads\MinhaIA-migration-check` confirmou o commit, histórico, relatórios, screenshot e referência HTML. `npm ci` instalou as dependências e `npm run check`, `sync` e `verify` passaram na cópia; `doctor` apontou ausência de chaves nesse clone limpo, como esperado, sem copiar credenciais.
+- `origin` do checkout original foi alterado para `https://github.com/sameque00-source/minhaia-desktop.git` somente após essas verificações. A branch de trabalho local continua `claude/elegant-lovelace-slefxv`; o remoto oficial publica a branch padrão `main`.
+- Backup adicional, feito antes da publicação, foi verificado em `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration`: 311 arquivos na cópia de trabalho e bundle Git de 411856 bytes, com `git bundle verify` bem-sucedido.
+- A revisão de padrões nos arquivos a publicar e dos nomes de arquivos sensíveis não encontrou credenciais. `.mcp.json` não contém valores secretos; `.secrets/` e `data/` foram excluídos. `gitleaks` não está instalado, portanto a varredura não certifica ausência absoluta de segredos.
+- `npm audit` registrou 8 vulnerabilidades moderadas apenas na árvore de desenvolvimento/build; `npm audit --omit=dev` encontrou zero. O relatório da migração mantém a origem intacta enquanto a varredura dedicada de segredos não estiver disponível.
 
 ## 8. Limitações e pendências
 
-1. Autenticar a CLI (`gh auth login`) e então verificar se o destino existe em modo privado, criá-lo se ausente, migrar os commits/arquivos, clonar limpo e trocar `origin` somente após validação.
-2. Só excluir o repositório antigo depois de todos os gates do relatório de migração serem confirmados. Eles ainda não foram atendidos.
-3. Implementar esforço de raciocínio apenas quando o contrato do motor/adaptadores transportar um parâmetro oficial por modelo/provedor e houver testes dessa transmissão.
-4. Executar uma missão completa com provedor real em um projeto temporário autorizado; nesta execução, a chamada real foi de uma única chamada de modelo, enquanto E2E usou o dublê.
-5. Reavaliar a opção de `asar` e o ícone do instalador antes de uma publicação distribuída.
+1. Instalar/executar `gitleaks` ou scanner equivalente sobre o commit enviado e o histórico pertinente; manter a origem antiga se esse gate não puder ser concluído.
+2. Implementar esforço de raciocínio apenas quando o contrato do motor/adaptadores transportar um parâmetro oficial por modelo/provedor e houver testes dessa transmissão.
+3. Executar uma missão completa com provedor real em um projeto temporário autorizado; o teste limpo E2E usa `TEST-STUB` e o clone não recebeu credenciais.
+4. Reavaliar as 8 vulnerabilidades moderadas restritas a dependências de desenvolvimento/build e a opção de `asar`/ícone antes de distribuição.
 
 ## 9. Próximo passo
 
-O próximo bloqueio operacional é a autenticação GitHub para concluir a migração autorizada. Depois dela, o novo destino precisa ser verificado e clonado limpo antes de qualquer exclusão do repositório antigo.
+O destino oficial e o `origin` local já apontam ao novo repositório. A origem antiga foi mantida intacta por prudência enquanto falta um scanner dedicado de segredos.
