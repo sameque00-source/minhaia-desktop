@@ -26,7 +26,7 @@ Destino oficial: `sameque00-source/minhaia-desktop`
 ## Backup
 
 - Backup pré-publicação: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration` (311 arquivos e bundle de 411856 bytes, bundle validado).
-- Backup final com todas as branches e commits de migração: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021` (311 arquivos, bundle Git de 422055 bytes, validado; contém as branches de origem e destino). Cópia exclui `.secrets/`, `data/`, dependências, `dist/` e `vendor/` gerado.
+- Backup final com todas as branches e commits de migração: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021`; a contagem, o commit e o bundle Git estão registrados no `manifest.txt`, e `git bundle verify` passou. Cópia exclui `.secrets/`, `data/`, dependências, `dist/` e `vendor/` gerado.
 
 ## Clonagem limpa e verificações
 
