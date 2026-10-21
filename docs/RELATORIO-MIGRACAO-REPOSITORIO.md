@@ -41,7 +41,7 @@ Destino oficial: `sameque00-source/minhaia-desktop`
 ## Estado do `origin` e da origem antiga
 
 - Após a validação da clonagem, o checkout de trabalho foi alinhado à branch `main`, configurado para acompanhar `origin/main`, e `origin` aponta para `https://github.com/sameque00-source/minhaia-desktop.git`. `git status` está limpo e o destino confirma `main` como HEAD padrão.
-- Todos os gates técnicos foram comprovados: backup final, branches/histórico, Gitleaks, GitHub Secret Scanning, clone e verificações. A tentativa de exclusão recebeu HTTP 403 porque o token `gh` não possui o escopo `delete_repo`; `gh auth refresh -h github.com -s delete_repo` está aguardando confirmação no fluxo de device login. Nenhuma exclusão foi efetuada. A origem continua intacta enquanto esse escopo não for concedido.
+- Todos os gates técnicos de migração foram comprovados: backup final, branches/histórico, Gitleaks, GitHub Secret Scanning, clone e verificações. A tentativa de exclusão recebeu HTTP 403 porque o token `gh` não possui o escopo `delete_repo`. O usuário optou explicitamente por manter a origem antiga; o fluxo de ampliação de escopo foi cancelado e nenhuma exclusão foi efetuada. O repositório antigo permanece intacto por decisão do usuário.
 
 ## Histórico de execuções
 

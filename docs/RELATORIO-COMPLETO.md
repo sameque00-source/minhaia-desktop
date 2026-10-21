@@ -87,4 +87,4 @@ A tela final substitui os números de exemplo por uma saudação e ações que p
 
 ## 9. Próximo passo
 
-O destino oficial é `minhaia-desktop`; o `origin` local aponta a ele. A exclusão da origem foi tentada após os gates e recusada por falta do escopo OAuth `delete_repo`; aguarda a confirmação do escopo solicitada pela CLI. Até lá, a origem permanece intacta.
+O destino oficial é `minhaia-desktop`; o `origin` local aponta a ele. O GitHub recusou a exclusão da origem por falta do escopo OAuth `delete_repo`; o usuário optou por manter o repositório antigo intacto e o fluxo de ampliação de escopo foi cancelado.
