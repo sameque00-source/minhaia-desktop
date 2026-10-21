@@ -179,22 +179,60 @@ function sanitizeNodeArgs(args, ws) {
 
 const NETWORK_PRELOAD = path.join(__dirname, 'sandbox-preload.js');
 
+// Diretórios que NÃO são percorridos em profundidade na varredura de links (projetos reais têm
+// milhares de arquivos em .git/node_modules). Os filhos DIRETOS deles ainda são conferidos: um
+// link no primeiro nível (.git/objects, node_modules/pacote — o layout do pnpm) é detectado.
+const HEAVY_DIRS = new Set(['node_modules', '.git', '.hg', '.svn', '.venv', 'venv', 'env', '__pycache__', '.tox', '.cache', 'coverage', 'dist', 'build', 'out', '.next', '.nuxt', 'target', 'vendor']);
+
 /**
- * Link simbólico ou hardlink dentro do workspace seria seguido pelo código confinado (limitação
- * do modelo de permissões): o workspace precisa conter só arquivos e diretórios comuns.
+ * Link simbólico/junction/hardlink dentro do workspace: o modelo de permissões do Node não resolve
+ * links (escrita através de uma junction criada aqui dentro gravaria fora do grant — confirmado
+ * em teste), então o workspace só pode conter:
+ * - arquivos e diretórios comuns;
+ * - links que resolvem para DENTRO do próprio workspace (use-case legítimo: pnpm, atalhos internos);
+ * - NUNCA link que aponte para fora, link quebrado ou hardlink (nlink > 1: o arquivo é compartilhado
+ *   com um nome que pode estar fora daqui e a escrita alteraria o conteúdo "de fora").
+ * Devolve a mensagem do primeiro problema encontrado, ou null.
  */
-function findWorkspaceLink(ws, limit = 5000) {
+function findWorkspaceLink(ws, limit = 200000) {
+  const { isInside } = require('../config');
+  let realWs;
+  try {
+    realWs = fs.realpathSync(ws);
+  } catch {
+    return `workspace inacessível: ${ws}`;
+  }
   let seen = 0;
-  const stack = [ws];
+  const checkLink = (abs) => {
+    const rel = path.relative(realWs, abs);
+    let target = null;
+    let broken = false;
+    try { target = fs.realpathSync(abs); } catch { broken = true; }
+    if (broken) return `link simbólico quebrado ${rel} (alvo inacessível — poderia apontar para fora)`;
+    if (target !== realWs && !isInside(target, realWs)) return `link simbólico ${rel} aponta para fora do workspace (${target})`;
+    return null; // resolve para dentro: inofensivo para o confinamento
+  };
+  const stack = [realWs];
   while (stack.length) {
     const dir = stack.pop();
-    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const heavy = HEAVY_DIRS.has(path.basename(dir));
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const ent of entries) {
       if (++seen > limit) return `workspace com mais de ${limit} entradas`;
       const abs = path.join(dir, ent.name);
-      const st = fs.lstatSync(abs);
-      if (st.isSymbolicLink()) return `link simbólico ${path.relative(ws, abs)}`;
-      if (st.isDirectory()) stack.push(abs);
-      else if (st.isFile() && st.nlink > 1) return `hardlink ${path.relative(ws, abs)}`;
+      if (ent.isSymbolicLink()) {
+        const problem = checkLink(abs);
+        if (problem) return problem;
+        continue; // link ok para dentro: nunca desce por ele (evita ciclos)
+      }
+      if (ent.isDirectory()) {
+        if (!heavy) stack.push(abs);
+        continue;
+      }
+      let st;
+      try { st = fs.lstatSync(abs); } catch { continue; }
+      if (st.isFile() && st.nlink > 1) return `hardlink ${path.relative(realWs, abs)} (arquivo compartilhado fora do workspace?)`;
     }
   }
   return null;

@@ -23,13 +23,20 @@ evidência; VETO de `reviewer`/`security` bloqueia.
 
 ```
 node bin/minhaia.js serve             # Web UI + API de missões em http://127.0.0.1:4317
+npm run desktop                       # app desktop (Electron) com a mesma UI/API
 node bin/minhaia.js doctor            # ambiente + MASTER intacto + 25/140 + chaves
+node bin/minhaia.js keys              # provedores configurados/faltando; nunca grava chave
 node bin/minhaia.js verify            # prova de somente leitura (git status do MASTER + hashes)
 node bin/minhaia.js select "<tarefa>" # agentes, Skills, regras, governança, modelo
-node bin/minhaia.js run "<objetivo>"  # missão real (precisa de chave em .secrets/.env)
+node bin/minhaia.js run "<objetivo>" [--project=<pasta|prj_id>]
+                                      # missão real (precisa de chave em .secrets/.env)
+node bin/minhaia.js projects [list|add|remove <prj_id>]
+                                      # pastas do usuário (a IA lê/escreve nelas)
 node bin/minhaia.js gateway           # gateway Anthropic-compatível em 127.0.0.1:20130
 node bin/minhaia.js test-master       # suítes originais do MASTER com estado isolado
 npm run check                         # typecheck + lint + testes (inclui API, integração, sandbox, UI)
+npm run dist                          # instalador NSIS do desktop em dist/ (electron-builder)
+npm run smoke:dist                    # valida o .exe empacotado (missão completa com dublê TEST-STUB)
 ```
 
 ## Fluxo de trabalho

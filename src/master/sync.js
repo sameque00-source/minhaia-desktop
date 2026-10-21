@@ -12,6 +12,14 @@ function toPosix(p) {
   return p.split(path.sep).join('/');
 }
 
+/**
+ * Normaliza CRLF→LF para casar patches declarados com `\n` mesmo quando o MASTER foi clonado
+ * com `core.autocrlf=true` (padrão do Git no Windows). Arquivos sem patch continuam byte a byte.
+ */
+function normalizeEol(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
 function globToRegex(glob) {
   const esc = glob
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -107,11 +115,12 @@ function applyPatches(manifest, sourcesById, stageRoot) {
     for (const relFile of candidates) {
       const abs = path.join(destBase, relFile);
       if (!fs.existsSync(abs)) throw new Error(`patch "${patch.id}": arquivo ausente ${relFile}`);
-      const text = fs.readFileSync(abs, 'utf8');
-      const count = text.split(patch.find).length - 1;
+      const text = normalizeEol(fs.readFileSync(abs, 'utf8'));
+      const find = normalizeEol(patch.find);
+      const count = text.split(find).length - 1;
       if (count === 0) continue;
-      const replacement = resolveTemplate(patch.replaceWith, path.join(paths.ROOT, src.to, relFile));
-      fs.writeFileSync(abs, text.split(patch.find).join(replacement));
+      const replacement = normalizeEol(resolveTemplate(patch.replaceWith, path.join(paths.ROOT, src.to, relFile)));
+      fs.writeFileSync(abs, text.split(find).join(replacement));
       files[toPosix(path.join(src.to, relFile))] = count;
       total += count;
     }
@@ -152,7 +161,31 @@ function createRuntimeLinks(manifest = loadManifest(), { dataRoot = null } = {})
     fs.mkdirSync(target, { recursive: true });
     fs.mkdirSync(path.dirname(at), { recursive: true });
     fs.rmSync(at, { recursive: true, force: true });
-    fs.symlinkSync(path.relative(path.dirname(at), target), at, 'dir');
+    // Junction no Windows não exige privilégio de administrador nem Modo de Desenvolvedor;
+    // symlink relativo continua sendo o formato no Linux/macOS.
+    if (process.platform === 'win32') fs.symlinkSync(target, at, 'junction');
+    else fs.symlinkSync(path.relative(path.dirname(at), target), at, 'dir');
+    created.push(link);
+  }
+  return created;
+}
+
+/**
+ * Garante os links de runtime AUSENTES (o pacote desktop não leva os links do repo: são
+ * recriados no primeiro boot apontando para o data/ do próprio app). Nunca mexe no que
+ * existe — um link desviado continua sendo problema detectável pelo `verify`.
+ */
+function ensureRuntimeLinks(manifest = loadManifest()) {
+  const created = [];
+  for (const link of (manifest.runtimeLinks && manifest.runtimeLinks.links) || []) {
+    const at = path.join(paths.ROOT, link.at);
+    try { fs.lstatSync(at); continue; } catch { /* ausente: cria */ }
+    const target = path.join(paths.ROOT, link.target);
+    if (!isInside(at, paths.ROOT) || !isInside(target, paths.ROOT)) throw new Error(`runtime link fora do MinhaIA: ${link.at}`);
+    fs.mkdirSync(target, { recursive: true });
+    fs.mkdirSync(path.dirname(at), { recursive: true });
+    if (process.platform === 'win32') fs.symlinkSync(target, at, 'junction');
+    else fs.symlinkSync(path.relative(path.dirname(at), target), at, 'dir');
     created.push(link);
   }
   return created;
@@ -265,4 +298,4 @@ function sync({ log = (_msg) => {} } = {}) {
   return lock;
 }
 
-module.exports = { sync, sha256, listSourceFiles, listDestFiles, loadManifest, masterGitHead, globToRegex, toPosix, createRuntimeLinks };
+module.exports = { sync, sha256, listSourceFiles, listDestFiles, loadManifest, masterGitHead, globToRegex, toPosix, createRuntimeLinks, ensureRuntimeLinks };

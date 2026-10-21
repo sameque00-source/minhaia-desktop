@@ -1,5 +1,6 @@
 // Processo filho que executa UMA missão no motor do MASTER (vendorizado). Isolar em processo
 // (em grupo próprio) dá cancelamento real, timeout e falha contida.
+const { spawnSync } = require('child_process');
 const bus = require('../runtime/bus');
 const { instrument } = require('./instrument');
 const { select } = require('../selection/selector');
@@ -30,7 +31,7 @@ function prepareResume(persistencia, missionId) {
   bus.emit('resume', { engineMissionId: missionId, estado: m.estado, tarefasReabertas: reset });
 }
 
-async function run({ objective, resumeEngineMissionId }) {
+async function run({ objective, modelId = null, resumeEngineMissionId }) {
   const testAdapters = testAdaptersFromEnv();
   if (!resumeEngineMissionId) bus.emit('analysis', { selection: select(objective) });
   if (!testAdapters && providerStatus().configured.length === 0) {
@@ -44,6 +45,13 @@ async function run({ objective, resumeEngineMissionId }) {
     if (e.type === 'plan' && e.missionId) engineMissionId = e.missionId;
   });
   const { Executor, persistencia } = instrument({ testAdapters });
+  if (modelId) {
+    const router = require(require('path').join(require('../config').paths.ENGINE_DIR, 'router', 'router.js'));
+    const { withSelectedModel } = require('../models/override');
+    const decide = router.decidirModelo;
+    router.decidirModelo = (request = {}) => withSelectedModel(decide(request), modelId);
+    bus.emit('model.selected', { modelId });
+  }
   if (resumeEngineMissionId) prepareResume(persistencia, resumeEngineMissionId);
   const executor = new Executor();
   bus.emit('phase', { phase: resumeEngineMissionId ? 'RETOMADA' : 'INICIO', message: resumeEngineMissionId ? `retomando ${resumeEngineMissionId}` : 'missão enviada ao Orquestrador' });
@@ -61,9 +69,31 @@ async function run({ objective, resumeEngineMissionId }) {
 }
 
 if (require.main === module) {
+  let stopping = false;
+  // O worker é líder da própria árvore de processos: ao sair por cancelamento ou por perda do
+  // processo pai (servidor/CLI morto), leva junto tudo o que o motor criou — nada fica órfão.
+  // POSIX: mata o grupo (kill negativo). Windows: não há grupo POSIX — taskkill /T /F encerra a
+  // árvore inteira a partir do próprio worker (inclui o próprio processo, como no POSIX).
+  const killOwnGroup = () => {
+    try {
+      if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(process.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else process.kill(-process.pid, 'SIGKILL');
+    } catch { /* ignore */ }
+  };
+  // Parada graciosa única: vale para SIGTERM (POSIX) e para a mensagem 'stop' (Windows/cancelamento
+  // por IPC). O estado do motor fica como estava (retomável); não se marca FALHA no motor, só se
+  // registra o motivo.
+  const gracefulStop = () => {
+    if (stopping) return;
+    stopping = true;
+    bus.emit('cancelled', { reason: stopReason, engineMissionId });
+    const bye = () => { killOwnGroup(); process.exit(130); };
+    if (process.connected) process.send({ kind: 'done', outcome: { status: 'CANCELADA', reason: stopReason, engineMissionId } }, bye);
+    else bye();
+  };
   process.on('message', async (/** @type {any} */ msg) => {
     if (!msg) return;
-    if (msg.kind === 'stop') { stopReason = String(msg.reason || stopReason); return; }
+    if (msg.kind === 'stop') { stopReason = String(msg.reason || stopReason); gracefulStop(); return; }
     if (msg.kind !== 'start') return;
     try {
       const outcome = await run(msg);
@@ -73,17 +103,7 @@ if (require.main === module) {
       process.send({ kind: 'done', outcome: { status: 'FALHA', reason: e.message, engineMissionId } }, () => process.exit(1));
     }
   });
-  // Cancelamento/timeout/desligamento: o estado do motor fica como estava (retomável); não se
-  // marca FALHA no motor, só se registra o motivo.
-  // O worker é líder do próprio grupo: ao sair por cancelamento ou por perda do processo pai
-  // (servidor/CLI morto), leva junto tudo o que o motor criou — nada fica órfão.
-  const killOwnGroup = () => { try { if (process.platform !== 'win32') process.kill(-process.pid, 'SIGKILL'); } catch { /* ignore */ } };
-  process.on('SIGTERM', () => {
-    bus.emit('cancelled', { reason: stopReason, engineMissionId });
-    const bye = () => { killOwnGroup(); process.exit(130); };
-    if (process.connected) process.send({ kind: 'done', outcome: { status: 'CANCELADA', reason: stopReason, engineMissionId } }, bye);
-    else bye();
-  });
+  process.on('SIGTERM', gracefulStop);
   process.on('disconnect', () => { killOwnGroup(); process.exit(1); });
 }
 

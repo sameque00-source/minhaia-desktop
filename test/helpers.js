@@ -47,6 +47,9 @@ async function startApi({ stub = false, env = {} } = {}) {
   const saved = {};
   const set = (k, v) => { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v; };
   set('MINHAIA_JOBS_DIR', path.join(rt.dir, 'jobs'));
+  // registro de projetos e chats SEMPRE no runtime isolado (nunca o data/ real da máquina)
+  if (!env.MINHAIA_PROJECTS_FILE) set('MINHAIA_PROJECTS_FILE', path.join(rt.dir, 'projetos', 'projetos.json'));
+  if (!env.MINHAIA_CHATS_DIR) set('MINHAIA_CHATS_DIR', path.join(rt.dir, 'chat'));
   if (stub) { set('NODE_ENV', 'test'); set('MINHAIA_TEST_ADAPTERS', STUB); set('MINHAIA_TEST_PROMPT_LOG', path.join(rt.dir, 'prompts.jsonl')); }
   for (const [k, v] of Object.entries(env)) set(k, v);
   const { createServer } = require('../src/server');

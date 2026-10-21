@@ -16,6 +16,17 @@ function flagValue(name, fallback) {
   return hit ? hit.slice(name.length + 1) : fallback;
 }
 
+/** --project aceita id (prj_…) ou pasta; pasta nova é registrada na hora (mesmas validações da UI). */
+function resolveProjectRef(ref) {
+  if (!ref) return null;
+  const projects = require('../src/projects/store');
+  if (projects.PROJECT_ID_RE.test(ref)) {
+    if (!projects.get(ref)) throw new Error(`projeto não encontrado: ${ref}`);
+    return ref;
+  }
+  return projects.add(ref).project.id;
+}
+
 const MASTER_SUITES = [
   'suite-regressao-fase0', 'teste-fase1-orquestrador', 'teste-fase2-planejador', 'teste-fase3-executor',
   'teste-fase4-agentes', 'teste-fase5-6-pesquisa-memoria', 'teste-fase7-8-router-autocorrecao',
@@ -67,7 +78,7 @@ const commands = {
   verify() {
     const r = require('../src/master/verify').verify();
     out(r, [
-      `MASTER: ${r.masterDir || 'não encontrado'}`,
+      `MASTER: ${r.masterDir || 'origem ausente — verificação limitada às cópias geradas (hash do lock)'}`,
       `HEAD: ${r.masterHead || '-'} (lock: ${r.lockHead || '-'})`,
       `git status do MASTER: ${r.masterGit ? (r.masterGit.clean ? 'limpo' : 'COM ALTERAÇÕES') : '-'}`,
       `arquivos no lock: ${r.files} | drift no MASTER: ${r.masterDrift.length} | cópias alteradas: ${r.vendorTampered.length} | ausentes: ${r.missingLocal.length}`,
@@ -96,6 +107,24 @@ const commands = {
     out(checks, checks.map((c) => `${c.ok ? 'OK  ' : 'FALHA'} ${c.name} — ${c.detail}`).join('\n'));
     if (flags.has('--brief')) return;
     process.exitCode = checks.slice(0, 5).every((c) => c.ok) ? 0 : 1;
+  },
+
+  // Chaves nunca são gravadas pela MinhaIA: mostra status (só nomes) e o modelo a colar à mão.
+  keys() {
+    const { providerStatus } = require('../src/engine');
+    const p = providerStatus();
+    const linhas = [
+      `arquivo (você edita, a MinhaIA nunca grava segredos): ${paths.SECRETS_ENV}`,
+      `configuradas: ${p.configured.length ? p.configured.join(', ') : 'nenhuma'}`,
+      `faltando: ${p.missing.join(', ')}`,
+      '',
+      'Para habilitar missões reais (basta 1 provedor grátis, ex.: Groq):',
+      `  1. crie ${paths.SECRETS_ENV} com uma linha GROQ_API_KEY=sua_chave`,
+      '  2. confira: minhaia keys && minhaia doctor',
+      '  3. reinicie o `minhaia serve` (ou o app desktop) para o ambiente recarregar',
+      'Sem chave as missões criadas ficam BLOQUEADAS com motivo, sem executar nada.',
+    ];
+    out(p, linhas.join('\n'));
   },
 
   agents() {
@@ -131,8 +160,9 @@ const commands = {
   // run/resume usam o mesmo caminho da API: processo worker + sandbox do código gerado.
   async run() {
     const objective = args.join(' ');
-    if (!objective) throw new Error('uso: minhaia run "<objetivo>"');
-    await followMission((m) => m.create(objective).id);
+    if (!objective) throw new Error('uso: minhaia run "<objetivo>" [--project=<pasta|prj_id>]');
+    const projectId = resolveProjectRef(flagValue('--project', null));
+    await followMission((m) => m.create(objective, { projectId }).id);
   },
 
   async resume() {
@@ -143,6 +173,31 @@ const commands = {
   missions() {
     const list = require('../src/missions/store').list();
     out(list, list.map((m) => `${m.id} ${m.status.padEnd(14)} ${m.engineState || '-'} ${m.objective.slice(0, 70)}`).join('\n') || '(nenhuma missão)');
+  },
+
+  projects() {
+    const projects = require('../src/projects/store');
+    const [sub, ...restArgs] = args;
+    if (!sub || sub === 'list') {
+      const list = projects.list();
+      out(list, list.map((p) => `${p.id} ${fs.existsSync(p.path) ? ' OK ' : 'AUSENTE'} ${p.name.padEnd(24)} ${p.path}`).join('\n') || '(nenhum projeto — adicione com: minhaia projects add "<pasta>")');
+      return;
+    }
+    if (sub === 'add') {
+      const dir = restArgs.join(' ');
+      if (!dir) throw new Error('uso: minhaia projects add "<pasta>"');
+      const { project, created } = projects.add(dir);
+      out({ ...project, created }, `${created ? 'adicionado' : 'já registrado'}: ${project.name} (${project.id})\n${project.path}\nA IA agora lê e escreve nesta pasta nas missões do projeto.`);
+      return;
+    }
+    if (sub === 'remove') {
+      if (!restArgs[0]) throw new Error('uso: minhaia projects remove <prj_id>');
+      const r = projects.remove(restArgs[0]);
+      if (!r.removed) throw new Error(r.reason);
+      out(r, `removido do registro (os arquivos NÃO foram tocados): ${restArgs[0]}`);
+      return;
+    }
+    throw new Error('uso: minhaia projects [list] | projects add "<pasta>" | projects remove <prj_id>');
   },
 
   memory() {
@@ -233,9 +288,14 @@ const commands = {
   sync                      materializa o MASTER (somente leitura) em vendor/ e .claude/
   verify                    prova que o MASTER está intacto e as cópias batem com o lock
   doctor [--brief]          checagem do ambiente
+  keys                      provedores configurados/faltando e como habilitar (nunca grava chave)
   agents | skills [filtro] | rules
   select "<tarefa>"         agentes, Skills, regras, governança e modelo para a tarefa
-  run "<objetivo>"          missão real (planejar → executar → testar → revisar)
+  run "<objetivo>" [--project=<pasta|prj_id>]
+                            missão real (planejar → executar → testar → revisar); com projeto,
+                            a IA lê e escreve na pasta escolhida
+  projects [list] | projects add "<pasta>" | projects remove <prj_id>
+                            pastas de projeto do usuário (o registro nunca apaga arquivos)
   missions | resume <mia_id>
   memory recall "<q>" | memory save [--type=fato] "<conteúdo>"
   serve [--port=4317]       Web UI + API de missões (loopback)

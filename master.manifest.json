@@ -5,51 +5,110 @@
       "id": "ai-orchestrator",
       "from": "AI-ORCHESTRATOR",
       "to": "vendor/master/ai-orchestrator",
-      "include": ["gateway", "classifier", "router", "catalog"],
-      "excludeDirs": ["logs", "config", "test-agentic", "test-agentic-2", "docs"],
+      "include": [
+        "gateway",
+        "classifier",
+        "router",
+        "catalog"
+      ],
+      "excludeDirs": [
+        "logs",
+        "config",
+        "test-agentic",
+        "test-agentic-2",
+        "docs"
+      ],
       "reason": "Roteamento de modelos: classificador de nível, catálogo free-only, scoring/circuit breaker, adapters Groq/Google/OpenRouter/9Router, gateway Anthropic-compatível :20130."
     },
     {
       "id": "ia-avancado",
       "from": "00-ORIGINAIS-PRESERVADOS/02-IA-AVANCADO-CLAUDE/ia anvancado clalude",
       "to": "vendor/master/ia-avancado",
-      "include": ["agentes", "autocorrecao", "base-agente", "executor", "memoria", "multimidia", "orquestrador", "pesquisa", "planejador", "projetos", "router", "testes"],
-      "excludeDirs": ["dados", "missions", "logs", "workspace"],
-      "excludeFilePatterns": ["\\.bak$", "\\.tmp$"],
+      "include": [
+        "agentes",
+        "autocorrecao",
+        "base-agente",
+        "executor",
+        "memoria",
+        "multimidia",
+        "orquestrador",
+        "pesquisa",
+        "planejador",
+        "projetos",
+        "router",
+        "testes"
+      ],
+      "excludeDirs": [
+        "dados",
+        "missions",
+        "logs",
+        "workspace"
+      ],
+      "excludeFilePatterns": [
+        "\\.bak$",
+        "\\.tmp$"
+      ],
       "reason": "Motor: orquestrador (DAG), planejador, executor, especialistas com veto, memória 8 tipos, autocorreção, pesquisa web, router com aprendizado, multimídia, projetos. Estado de runtime (dados/missions/logs) NÃO é copiado: começa limpo."
     },
     {
       "id": "agents-canonical-overlay",
       "from": "01-USO-DIRETO-CLAUDE/.claude/agents",
       "to": "vendor/master/ia-avancado/base-agente/agents",
-      "include": ["*.md"],
+      "include": [
+        "*.md"
+      ],
       "reason": "base-agente do motor tem 19 agentes (idênticos aos canônicos); sobrepõe os 25 canônicos para o motor carregar também 3d, cli, hooks, integration, mcp, swarm."
     },
     {
       "id": "claude-agents",
       "from": "01-USO-DIRETO-CLAUDE/.claude/agents",
       "to": ".claude/agents",
-      "include": ["*.md"],
+      "include": [
+        "*.md"
+      ],
       "reason": "Disponibiliza os 25 subagentes para sessões Claude Code abertas no MinhaIA. Cópia (nunca symlink: symlink permitiria escrita no MASTER)."
     },
     {
       "id": "claude-skills",
       "from": "01-USO-DIRETO-CLAUDE/.claude/skills-flat-140",
       "to": ".claude/skills",
-      "include": ["*"],
+      "include": [
+        "*"
+      ],
       "reason": "Disponibiliza as 140 Skills (5 próprias + 135 Ruflo) para sessões Claude Code no MinhaIA. skills-flat-140 escolhida por ser o conjunto completo e deduplicado."
     }
   ],
   "runtimeLinks": {
     "_doc": "Diretórios onde o código do MASTER grava estado (relativo ao próprio __dirname). Na cópia vendorizada viram symlinks para data/ ou .secrets/ dentro do MinhaIA: re-sync nunca apaga memória, e nada é gravado no MASTER.",
     "links": [
-      { "at": "vendor/master/ia-avancado/orquestrador/missions", "target": "data/missions" },
-      { "at": "vendor/master/ia-avancado/projetos/dados", "target": "data/projetos" },
-      { "at": "vendor/master/ia-avancado/pesquisa/dados", "target": "data/pesquisa" },
-      { "at": "vendor/master/ia-avancado/memoria/dados", "target": "data/memoria" },
-      { "at": "vendor/master/ia-avancado/agentes/logs", "target": "data/logs/agentes" },
-      { "at": "vendor/master/ai-orchestrator/logs", "target": "data/logs/gateway" },
-      { "at": "vendor/master/ai-orchestrator/config", "target": ".secrets" }
+      {
+        "at": "vendor/master/ia-avancado/orquestrador/missions",
+        "target": "data/missions"
+      },
+      {
+        "at": "vendor/master/ia-avancado/projetos/dados",
+        "target": "data/projetos"
+      },
+      {
+        "at": "vendor/master/ia-avancado/pesquisa/dados",
+        "target": "data/pesquisa"
+      },
+      {
+        "at": "vendor/master/ia-avancado/memoria/dados",
+        "target": "data/memoria"
+      },
+      {
+        "at": "vendor/master/ia-avancado/agentes/logs",
+        "target": "data/logs/agentes"
+      },
+      {
+        "at": "vendor/master/ai-orchestrator/logs",
+        "target": "data/logs/gateway"
+      },
+      {
+        "at": "vendor/master/ai-orchestrator/config",
+        "target": ".secrets"
+      }
     ]
   },
   "patches": [
@@ -115,6 +174,42 @@
       "replaceWith": "const ESPECIALISTAS = Object.freeze({\n  ...require(require('path').join(__dirname, '{{REL:src/agents/especialistas-extra.js}}')),",
       "expectCount": 1,
       "reason": "Registro do motor mapeava 19 especialistas; acrescenta os 6 canônicos restantes (definidos em src/agents/especialistas-extra.js) sem alterar os 19 originais."
+    },
+    {
+      "id": "project-workspace",
+      "source": "ia-avancado",
+      "file": "executor/core/workspace.js",
+      "find": "function pastaWorkspace(missaoId) {\n  const projetoId = projetoDaMissaoOuNull(missaoId);",
+      "replaceWith": "function pastaWorkspace(missaoId) {\n  // MinhaIA: quando o usuário escolheu uma pasta de projeto na interface, ela É o workspace da\n  // missão (a IA lê e escreve nela de verdade). Validada antes na camada de produto\n  // (src/projects/store.js: realpath, recusa raiz de unidade/MASTER/.secrets).\n  if (process.env.MINHAIA_PROJECT_DIR) return process.env.MINHAIA_PROJECT_DIR;\n  const projetoId = projetoDaMissaoOuNull(missaoId);",
+      "expectCount": 1,
+      "reason": "Suporte a projetos do usuário: o workspace da missão passa a ser a pasta escolhida, em vez do diretório isolado por missão. Sem MINHAIA_PROJECT_DIR, comportamento original intacto."
+    },
+    {
+      "id": "workspace-realpath-guard",
+      "source": "ia-avancado",
+      "file": "executor/core/workspace.js",
+      "find": "  return alvo;\n}",
+      "replaceWith": "  require(require('path').join(__dirname, '{{REL:src/missions/scope.js}}')).assertInside(raiz, alvo);\n  return alvo;\n}",
+      "expectCount": 1,
+      "reason": "Segurança: a checagem lexical original deixa escapar escrita através de junction/symlink criada dentro do workspace (confirmado com node --permission). O alvo é agora resolvido por realpath antes de aceitar (src/missions/scope.js)."
+    },
+    {
+      "id": "ferramentas-erro-link",
+      "source": "ia-avancado",
+      "file": "executor/core/ferramentas.js",
+      "find": "  const alvo = resolverCaminhoSeguro(missaoId, caminhoRelativo);",
+      "replaceWith": "  let alvo;\n  try { alvo = resolverCaminhoSeguro(missaoId, caminhoRelativo); } catch (e) { return { ok: false, erro: e.message }; }",
+      "expectCount": 3,
+      "reason": "A guarda real de caminho (workspace-realpath-guard) LANÇA quando o alvo resolve para fora do workspace via link; nas ferramentas de arquivo o erro vira resultado estruturado (ok:false) para a autocorreção reagir, em vez de estourar a tarefa."
+    },
+    {
+      "id": "catalog-minimax-model",
+      "source": "ai-orchestrator",
+      "file": "catalog/models.json",
+      "find": "      \"telemetria\": \"2026-09-14: 0/8 sucesso, sempre timeout em 20s. Prioridade rebaixada por telemetria (nao desabilitado: pode ser so lentidao, nao defeito).\"\n    }\n  ],",
+      "replaceWith": "      \"telemetria\": \"2026-09-14: 0/8 sucesso, sempre timeout em 20s. Prioridade rebaixada por telemetria (nao desabilitado: pode ser so lentidao, nao defeito).\"\n    },\n    {\n      \"id\": \"openrouter-minimax-m3.1-flash\",\n      \"provider\": \"OpenRouter\",\n      \"model\": \"minimax/minimax-m3.1-flash:free\",\n      \"modality\": [\n        \"text\"\n      ],\n      \"context_window\": 131072,\n      \"coding_score\": \"boa\",\n      \"reasoning_score\": \"boa\",\n      \"vision\": false,\n      \"tools\": true,\n      \"agent_capable\": true,\n      \"speed_tps\": \"media\",\n      \"free\": true,\n      \"requires_card\": false,\n      \"daily_limit\": \"20 RPM; 50 RPD sem credito / 1000 RPD com saldo\",\n      \"max_request_tokens\": null,\n      \"health\": \"ok\",\n      \"health_checked_at\": \"2026-10-19\",\n      \"health_evidence\": \"chamada real chat/completions, HTTP 200, resposta textual nao vazia, chave com Key limit \",\n      \"priority\": 85,\n      \"level_tags\": [2,3],\n      \"endpoint\": \"https://openrouter.ai/api/v1\",\n      \"docs_url\": \"https://openrouter.ai/docs/api-reference/limits\",\n      \"notes\": \"modelo MiniMax M3.1 Flash via OpenRouter :free pool. Identificador exato confirmado por teste direto.\",\n      \"source_checked_at\": \"2026-10-19\",\n      \"confidence\": \"CONFIRMADO\",\n      \"tools_verificado_em\": \"2026-10-19\",\n      \"tools_evidencia\": \"chamada real com tools: devolveu bloco tool_use com argumentos corretos\"\n    }\n  ],",
+      "expectCount": 1,
+      "reason": "Adiciona modelo MiniMax M3.1 Flash (gratuito via OpenRouter) ao cat?logo. Identificador exato 'minimax/minimax-m3.1-flash:free' confirmado funcional em teste direto. Eleg?vel para n?veis 2-3 (tarefas de c?digo e racioc?nio m?dio)."
     }
   ]
 }

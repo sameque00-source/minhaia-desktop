@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.js", "bin/**/*.js", "ui/**/*.js", ".claude/hooks/**/*.js", "scripts/**/*.js"],
+  "include": ["src/**/*.js", "bin/**/*.js", "desktop/**/*.js", "ui/**/*.js", ".claude/hooks/**/*.js", "scripts/**/*.js"],
   "exclude": ["vendor", "node_modules", "data"]
 }

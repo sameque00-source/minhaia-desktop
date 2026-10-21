@@ -89,7 +89,13 @@ function logs(id, { afterSeq = 0, types = null, limit = 5000 } = {}) {
   return store.readEvents(id, { afterSeq, types, limit });
 }
 
+// Diretórios que a listagem de arquivos NÃO percorre (projetos reais são enormes; a UI lista o
+// código do usuário, não dependências/build). A leitura individual de um arquivo continua livre.
+const IGNORE_DIRS = new Set(['node_modules', '.git', '.hg', '.svn', '.venv', 'venv', '__pycache__', '.tox', '.cache', 'coverage', 'dist', 'build', 'out', '.next', 'target']);
+
 function workspaceDir(job) {
+  // missão de projeto: a pasta do projeto é o workspace real (gravado no job pelo gerenciador)
+  if (job && typeof job.workspace === 'string' && job.workspace && fs.existsSync(job.workspace)) return job.workspace;
   if (!job || !job.engineMissionId || !/^missao_[A-Za-z0-9_-]+$/.test(job.engineMissionId)) return null;
   return path.join(missionsRoot(), job.engineMissionId, 'workspace');
 }
@@ -103,6 +109,7 @@ function files(id) {
     for (const ent of fs.readdirSync(abs, { withFileTypes: true })) {
       if (out.length >= 500) return;
       if (ent.isSymbolicLink()) continue;
+      if (ent.isDirectory() && IGNORE_DIRS.has(ent.name)) continue;
       const r = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) walk(path.join(abs, ent.name), r);
       else if (ent.isFile()) { const st = fs.statSync(path.join(abs, ent.name)); out.push({ path: r, bytes: st.size, modifiedAt: st.mtime.toISOString() }); }

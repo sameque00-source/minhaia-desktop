@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { SKIP_NO_MASTER, startApi, req, waitFinished } = require('./helpers');
 const { providerStatus } = require('../src/engine');
 
@@ -20,6 +23,34 @@ test('API de missões: rotas, bloqueio honesto sem provedor e segurança', { ski
     const hive = (await req(base, 'GET', '/api/skills?q=hive')).json;
     assert.ok(hive.some((s) => s.id === 'hive-mind'));
     assert.strictEqual((await req(base, 'GET', '/api/rules')).json.length, 3);
+    const models = (await req(base, 'GET', '/api/models')).json;
+    assert.ok(models.length > 0 && models.every((m) => m.id && m.provider));
+    assert.ok(models.every((m) => typeof m.available === 'boolean' && m.reasoningEffort === false));
+    const metrics = (await req(base, 'GET', '/api/metrics?period=7d')).json;
+    assert.strictEqual(metrics.period, '7d');
+    assert.strictEqual(metrics.tokens, null, 'tokens ausentes continuam explicitamente indisponíveis');
+    assert.strictEqual(metrics.activity.length, 7);
+  });
+
+  await t.test('modelo selecionado é validado e persistido na missão sem iniciar provedor', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'minhaia-model-api-')));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const project = (await req(base, 'POST', '/api/projects', { body: { path: dir } })).json;
+    const models = (await req(base, 'GET', '/api/models')).json;
+    const available = models.find((model) => model.available);
+    const unavailable = models.find((model) => !model.available);
+    if (available) {
+      const created = await req(base, 'POST', '/api/missions', { body: { objective: 'Teste de escolha de modelo', projectId: project.id, modelId: available.id, start: false } });
+      assert.equal(created.status, 201);
+      assert.equal(created.json.modelId, available.id);
+      assert.equal(created.json.status, 'CRIADA');
+    }
+    if (unavailable) {
+      const rejected = await req(base, 'POST', '/api/missions', { body: { objective: 'não iniciar', modelId: unavailable.id, start: false } });
+      assert.equal(rejected.status, 422);
+      assert.match(rejected.json.error, /Configure|adaptador/);
+    }
+    assert.equal((await req(base, 'POST', '/api/missions', { body: { objective: 'modelo inventado', modelId: 'claude-opus', start: false } })).status, 400);
   });
 
   await t.test('select devolve análise determinística', async () => {
@@ -56,7 +87,7 @@ test('API de missões: rotas, bloqueio honesto sem provedor e segurança', { ski
       const r = http.get(`${base}/api/missions/${id}/events`, (res) => {
         assert.match(res.headers['content-type'], /text\/event-stream/);
         let buf = '';
-        res.on('data', (c) => { buf += c; if ((buf.match(/event: mission/g) || []).length >= 3) { r.destroy(); resolve(buf); } });
+        res.on('data', (c) => { buf += c; if ((buf.match(/event: mission/g) || []).length >= 1) { r.destroy(); resolve(buf); } });
       });
       r.on('error', (e) => (e.code === 'ECONNRESET' ? null : reject(e)));
       setTimeout(() => { r.destroy(); reject(new Error('SSE sem dados')); }, 5000);

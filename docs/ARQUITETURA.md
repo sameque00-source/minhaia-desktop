@@ -1,6 +1,7 @@
 # Arquitetura da MinhaIA
 
-Estado: **fundação** (fase 1). Rótulos de evidência conforme `.claude/rules/20-evidencia.md`.
+Estado: **produto em construção** (fundação + camada de projeto/chat + app desktop empacotável). Rótulos de evidência conforme `.claude/rules/20-evidencia.md`.
+Relatório completo do estado atual: [`RELATORIO.md`](RELATORIO.md).
 Decisões e o registro "existe no MASTER?" estão em [`DECISOES.md`](DECISOES.md).
 
 ## 1. Visão geral
@@ -26,12 +27,18 @@ segurança operacional (hooks) e testes.
 
 | Módulo | Origem | Papel |
 |---|---|---|
-| `src/master/sync.js` | novo | Materializa as fontes do manifesto, aplica patches, cria links de runtime, grava `master.lock.json` |
-| `src/master/verify.js` | novo | Prova de somente leitura: `git status` do MASTER + sha256 origem/destino |
+| `src/master/sync.js` | novo | Materializa as fontes do manifesto, aplica patches, cria links de runtime (`createRuntimeLinks`/`ensureRuntimeLinks`), grava `master.lock.json` |
+| `src/master/verify.js` | novo | Prova de somente leitura: `git status` do MASTER + sha256 origem/destino (modo limitado `limited` quando a origem não está presente) |
 | `src/registry/` | novo (lê MASTER) | Registro de 25 agentes (+ metadados de veto/RO do motor), 140 Skills (Use/Skip when, dependências), 3 regras |
 | `src/selection/selector.js` | compõe MASTER | Nível (classifier do AI-ORCHESTRATOR) + composição de agentes (motor) + ranking de Skills + governança + prévia de modelo (router do motor) |
 | `src/engine/index.js` | fachada | Missão real via `Executor` do motor; acesso a memória, autocorreção, pesquisa, LLM, router |
 | `src/security/redact.js` | compõe MASTER | Padrões de segredo da memória do MASTER + chave Google/query/chave privada |
+| `src/projects/store.js` | novo | Registro de pastas de projeto do usuário (validação, ids, persistência) |
+| `src/projects/browse.js` | novo | Navegação/leitura/busca de arquivos do projeto confinadas por realpath |
+| `src/chat/store.js` | novo | Histórico de conversa por projeto (jsonl, redação, preâmbulo de contexto) |
+| `src/chat/reconcile.js` | novo | Fecha na leitura pedidos sem resposta de missões já terminadas (restart); idempotente |
+| `src/missions/scope.js` | novo | Guarda de confinamento por caminho real, injetada no workspace do motor |
+| `desktop/main.js` · `desktop/preload.js` | novo | App desktop (Electron): inicia a mesma API e carrega a UI; ponte mínima de pasta e de abertura da pasta `.secrets` |
 | `src/agents/especialistas-extra.js` | novo | 6 especialistas que o motor não mapeava (3d, cli, hooks, integration, mcp, swarm) |
 | `vendor/master/ai-orchestrator` | MASTER | Gateway :20130, classificador, scoring/circuit breaker, adapters, catálogo free-only |
 | `vendor/master/ia-avancado` | MASTER | Motor completo (DAG, planejador LLM, executor com ferramentas reais, especialistas com veto, memória, autocorreção, pesquisa web, multimídia, projetos) |
@@ -45,6 +52,7 @@ segurança operacional (hooks) e testes.
 - Para missões reais: ao menos uma chave em `.secrets/.env` — `GROQ_API_KEY`, `GOOGLE_API_KEY`,
   `OPENROUTER_API_KEY` ou `NINEROUTER_API_KEY` (+ 9Router rodando em :20128 para esta última).
 - Opcional (MCP): `npx` com acesso ao registry npm; Chromium/Chrome para o Playwright.
+- Opcional (desktop): Electron 44 (devDependency; `npm run desktop`) — sem dependência em runtime do Node.
 
 ## 4. Fluxo de execução
 
@@ -183,27 +191,63 @@ Sessão Claude Code: ferramentas nativas + MCP.
   Escutar numa porta continua permitido
   (servidores gerados são testados pelo motor a partir do worker). Isso impede o código gerado
   de chamar a própria API local, o gateway ou a internet. Opt-out consciente:
-  `MINHAIA_SANDBOX_ALLOW_NETWORK=1`. Antes de executar, o workspace é varrido e link simbólico
-  ou hardlink são recusados (o código confinado os seguiria).
+  `MINHAIA_SANDBOX_ALLOW_NETWORK=1`.
+- **Links no workspace**: a varredura antes de executar recusa link simbólico quebrado, link que
+  resolve para fora do workspace e hardlink; link simbólico que aponta para dentro é aceito
+  (ex.: `node_modules` via junction). Diretórios pesados (`node_modules`, `.git`, `dist`, `target`,
+  `vendor`…) não são percorridos, mas os filhos diretos do workspace são checados. O preload
+  bloqueia **criação** de symlink/hardlink (`fs.symlink(s)Sync/link(s)Sync` e `fs/promises`) com
+  `ERR_MINHAIA_LINK_DENIED`, independente de rede. A gravação do motor resolve o caminho real e
+  recusa alvo que escape (patch `workspace-realpath-guard`), fechando o furo de junction no
+  Windows (`node --permission` não resolve links).
 - Fila limitada (`MINHAIA_MAX_PENDING`, padrão 20 → 429).
 [CONFIRMADO: cenários adversariais nos testes — escrita/leitura fora, python3, flags de fuga,
 conexão TCP, consulta DNS]
 
-### Plataformas: garantias de processo valem só no Linux
+### Plataformas: garantias de processo
 
 | Garantia | Linux | macOS | Windows |
 |---|---|---|---|
-| Grupo de processos próprio (cancelar/timeout/fim mata tudo que o motor criou) | sim (testado) | sim (POSIX) | **não**: o worker não é `detached`; só o worker é encerrado, processos que ele criou podem ficar órfãos |
-| Worker se mata com o grupo quando o dono (servidor/CLI) morre | sim (testado) | sim | **não** (sem grupo) |
-| Identidade do processo dono = PID + instante de início (`/proc/<pid>/stat`) | sim (testado) | **não**: sem `/proc`, só o PID; qualquer processo vivo com aquele PID é tomado pelo dono | só o PID |
+| Grupo de processos próprio (cancelar/timeout/fim mata tudo que o motor criou) | sim (testado) | sim (POSIX) | sim no fluxo normal: `taskkill /PID <pid> /T /F` encerra a árvore (cancelar/fim **testados**; sem prova de netos por falta de `/proc`) |
+| Worker se mata com o grupo quando o dono (servidor/CLI) morre | sim (testado) | sim | parcial: ao perder o IPC, o worker roda `taskkill` na própria árvore [INFERIDO por código; sem teste de dono morto à força] |
+| Identidade do processo dono = PID + instante de início | sim (testado; `/proc/<pid>/stat`) | **não**: sem `/proc`, só o PID | sim (testado): `procStart` via `[System.Diagnostics.Process]::GetProcessById(pid).StartTime.Ticks` (PowerShell) — dono vivo e PID reaproveitado cobertos |
 | Zumbi conta como morto | sim | não se aplica | não se aplica |
 | Sandbox do código gerado (permissões do Node + preload de rede) | sim (testado) | [INFERIDO] sim, é do Node | [INFERIDO] sim, é do Node |
 
-Consequência fora do Linux [INFERIDO por leitura do código, sem teste nessas plataformas]: se o
-servidor/CLI morrer e o PID for reaproveitado por outro processo, a missão fica em `EXECUTANDO`
-até esse processo terminar (cancelar responde 409). Contorno manual: encerrar o processo e
-reiniciar o servidor. Uso suportado: **Linux**. Um gerenciador de missões por processo é o uso
-previsto; se houver mais de um, cada um ignora as missões do outro (identidade `owner.id`).
+No Windows, dono/worker são identificados por **PID + instante de criação** (PowerShell, ~1 chamada
+por lançamento/recuperação); recuperação stale mata a árvore com `taskkill /T /F` só quando o dono
+segue vivo com o mesmo instante de criação — PID reaproveitado nunca engana (coberto por testes).
+Um gerenciador de missões por processo é o uso previsto; com mais de um, cada um ignora as missões
+do outro (identidade `owner.id`). macOS segue só por PID [INFERIDO], sem teste nesta máquina.
+
+### Projetos do usuário e chat (§12.1)
+
+A pasta de trabalho é escolhida pelo usuário e **não é copiada**: o motor escreve nela via
+`MINHAIA_PROJECT_DIR`, e o patch `project-workspace` faz `pastaWorkspace()` devolver essa pasta.
+
+- **Registro** (`src/projects/store.js`): `data/projetos/projetos.json` (ou
+  `MINHAIA_PROJECTS_FILE`). `add` normaliza e recusa raiz de unidade, pasta inexistente/arquivo,
+  MASTER (ou dentro dele), qualquer caminho com segmento `.secrets` e duplicata por caminho real.
+  Id `prj_` + sha1 do realpath (12 hex) — `/^prj_[a-z0-9]{12}$/`. Remover do registro **nunca**
+  apaga arquivos.
+- **Missão**: `POST /api/missions` aceita `projectId`; a missão guarda `projectId`/`workspace` e o
+  worker recebe `MINHAIA_PROJECT_DIR`. Projeto removido ou pasta ausente → status `BLOQUEADA`
+  antes de gastar LLM. Sem `projectId`, o comportamento antigo (workspace da missão) continua.
+- **Confinamento**: todo write do motor passa por `assertInside(raiz, alvo)` (`src/missions/scope.js`,
+  patch `workspace-realpath-guard`); ferramentas retornam `{ok:false, erro}` em vez de derrubar a
+  missão (patch `ferramentas-erro-link`). A navegação da UI (`src/projects/browse.js`) resolve
+  realpath em cada nível, ignora links, limita arquivo a 256 KB, 2000 entradas por pasta, 100
+  resultados e 50 mil arquivos por busca.
+- **Chat** (`src/chat/store.js`): um `.jsonl` por projeto em `data/chat/<projectId>.jsonl` (ou
+  `MINHAIA_CHATS_DIR`); texto redigido, ≤ 8000 chars, ids `msg_…`; a UI ignora `missionId` ao
+  renderizar. Enviar mensagem cria a missão com preâmbulo das últimas 6 trocas (≤ 1800 chars,
+  400 por turno) + `Pedido atual: …`; a mensagem guarda `missionId`. No evento `finished`, o
+  servidor grava a resposta-resumo (status, arquivos, motivo). Não é um segundo agente: cada
+  resposta é uma missão real do motor.
+- **Reconciliação** (`src/chat/reconcile.js`): o `GET /api/projects/:id/chat` fecha pedidos sem
+  resposta (missão já terminada, ex.: servidor reiniciado antes do `finished`) gravando o resumo
+  agora — idempotente (não duplica), nunca altera a missão e ignora registro corrompido [coberto
+  por teste de reinício real].
 
 ## 13. Observabilidade
 
@@ -230,7 +274,18 @@ gravados em `data/jobs/<id>/events.jsonl`, transmitidos por SSE.
   (pipeline real do motor com dublê de LLM só de teste: plano, agentes, Skills no prompt,
   execução, arquivos, resultado, cancelamento, timeout, recusa do dublê fora de teste);
   **sandbox** (código gerado tentando gravar/ler fora do workspace e chamar `python3`);
-  **UI no Chromium** (fluxo completo, abas, cancelamento, XSS, zero erros de console).
+  **projetos/chat** (registro e validação, confinamento realpath/junction, links internos ×
+  externos, bloqueio de criação de link, API de projetos, missão com projeto, bloqueio de projeto
+  removido, redação/preâmbulo do chat, resposta do assistente e contexto na missão seguinte);
+  **UI no Chromium** (fluxo completo, abas, cancelamento, XSS, zero erros de console;
+  **UI do projeto**: pasta real, chat → missão com resposta, navegador de arquivos, busca e
+  guia de chaves); **desktop** (Electron real via Playwright: sobe a API em porta efêmera, ponte
+  de pasta/segredos exposta, adiciona projeto pela UI, sem erro de página); **pacote**
+  (exclusões do electron-builder conferidas contra o manifesto: links de runtime e `.secrets`
+  nunca entram no `.exe`; `verify` limitado valida as cópias contra o lock).
+- Contagem atual no Windows: 153 testes, 150 passando, 3 pulados (2 dependem de `/proc`/grupos
+  POSIX na recuperação; 1 de `/proc` no cancelamento). `npm run dist` gera o `.exe` (electron-builder/NSIS)
+  e `npm run smoke:dist` valida o pacote real de ponta a ponta (missão completa com dublê TEST-STUB).
 - `minhaia test-master` — as 8 suítes originais do MASTER contra a cópia vendorizada.
 - Não há etapa de build: a UI é HTML/CSS/JS servido como está (sem bundler), e o backend é
   Node sem transpilação.
@@ -238,18 +293,27 @@ gravados em `data/jobs/<id>/events.jsonl`, transmitidos por SSE.
 
 ## 15. CLI
 
-`bin/minhaia.js`: `serve` (UI + API), `sync`, `verify`, `doctor`, `agents`, `skills`, `rules`,
-`select`, `run`, `missions`, `resume`, `memory recall|save`, `gateway`, `test-master`; `--json`.
+`bin/minhaia.js`: `serve` (UI + API), `sync`, `verify`, `doctor`, `keys` (status dos provedores e
+como habilitar; nunca grava chave), `agents`, `skills`, `rules`, `select`,
+`run` (`--project=<pasta|prj_id>`), `projects [list|add|remove]`, `missions`, `resume`,
+`memory recall|save`, `gateway`, `test-master`; `--json`.
+
+Scripts npm/Windows: `npm run desktop` (Electron), `npm run dist` (instalador NSIS),
+`npm run smoke:dist` (valida o `.exe` empacotado de ponta a ponta) e, para duplo clique,
+`scripts/serve.cmd`, `scripts/desktop.cmd` e `scripts/check.cmd`.
 
 ## 16. API de missões (`node bin/minhaia.js serve` → `http://127.0.0.1:4317`)
 
 | Método | Rota | Função |
 |---|---|---|
-| GET | `/api/health`, `/api/system` | saúde; integridade do MASTER, 25/140, provedores |
+| GET | `/api/health`, `/api/system` | saúde; integridade do MASTER (`limited` quando a origem não está presente), 25/140, provedores (inclui `envFile`, o caminho do `.env` para a UI) |
 | GET | `/api/agents`, `/api/skills?q=`, `/api/rules` | registros |
 | POST | `/api/select` | análise determinística de uma tarefa |
-| GET/POST | `/api/missions` | listar / criar (`{objective, start?}`) |
+| GET/POST | `/api/missions` | listar / criar (`{objective, start?, projectId?}`) |
 | POST | `/api/missions/:id/start` · `/cancel` · `/resume` | iniciar, cancelar (encerra o worker e registra FALHA no motor), retomar |
+| GET | `/api/projects` · POST · PUT/DELETE `/api/projects/:id` | registro de pastas (`{path}`); DELETE só remove do registro |
+| GET | `/api/projects/:id/files?path=` · `/file?path=` · `/search?q=` | navegar, ler (≤256 KB) e buscar no projeto |
+| GET/POST | `/api/projects/:id/chat` | histórico (`?limit=`) e envio `{text}` (cria missão) |
 | GET | `/api/missions/:id` | job + snapshot do motor + análise + plano |
 | GET | `/api/missions/:id/tasks` · `/agents` · `/skills` · `/execution` · `/logs` · `/result` · `/files[?path=]` | visões |
 | GET | `/api/missions/:id/events` | SSE com replay |
@@ -277,7 +341,9 @@ O gateway Anthropic-compatível (:20130) continua disponível à parte.
 
 ## 17. Web UI
 
-`ui/` (HTML/CSS/JS sem framework, servido pela API). Composer de missão; lista de missões;
+`ui/` (HTML/CSS/JS sem framework, servido pela API). Card de **projeto** na barra lateral
+(adicionar/remover/selecionar pasta; id persistido em `localStorage`), conversa por projeto com
+histórico e navegador de arquivos (listar/abrir/buscar). Composer de missão; lista de missões;
 cabeçalho com status do job e do motor, nível, rótulo TEST-STUB quando for o caso, progresso,
 Cancelar/Retomar habilitados só quando a ação existe; abas **Conversa** (narrativa dos eventos),
 **Plano**, **Task Graph** (SVG por camadas de dependência), **Agentes & Skills**, **Execução**
@@ -285,6 +351,27 @@ Cancelar/Retomar habilitados só quando a ação existe; abas **Conversa** (narr
 **Testes & Revisão**, **Logs**; painel lateral de **observabilidade ao vivo** (SSE; atualização
 por evento, refresh de 15 s só para a contagem de cooldown). Todo dado do motor/LLM entra como
 texto (sem `innerHTML`).
+
+**App desktop** (`npm run desktop` → `desktop/main.js`): inicia a mesma API **em processo**
+(porta efêmera em loopback) e abre a mesma UI numa `BrowserWindow` com `contextIsolation`,
+`sandbox` e **sem** `nodeIntegration`; os únicos privilégios expostos ao renderer são
+`minhaiaDesktop.chooseFolder()` (diálogo nativo) e `minhaiaDesktop.openSecretsFolder()` (abre a
+pasta `.secrets` no gerenciador de arquivos — nenhum valor de chave cruza a ponte), via IPC.
+A UI mostra o botão "Pasta…" quando a ponte existe, e o chip de LLM abre o painel "Configurar
+provedor" com o caminho real do `.env`. Navegação externa é bloqueada (só `https:` abre no
+navegador do sistema), instância única e, ao fechar, o `shutdown` interrompe missões e fecha a
+API. Nada de regra de negócio duplicada: o desktop é só a casca.
+
+**Pacote instalável** (`npm run dist` → electron-builder/NSIS, `dist/MinhaIA Setup 0.1.0.exe`):
+`asar: false` (o motor faz `require`/`fork` por caminho real); o pacote leva `src/`, `ui/`,
+`bin/`, `desktop/`, `vendor/`, `.claude/{agents,skills}` e o lock — e **nunca** `data/` ou
+`.secrets/` (links de runtime são excluídos e recriados no boot por `ensureRuntimeLinks()` para o
+`data/` do próprio app). No Electron empacotado, `process.execPath` é o `MinhaIA.exe`; o worker e
+o código gerado rodam com `ELECTRON_RUN_AS_NODE=1` (definido pelo `MissionManager` quando
+`process.versions.electron`). Sem o MASTER de origem, `verify` cai em **modo limitado**: valida as
+cópias contra os hashes do lock (HEAD vem do lock) e a UI mostra "MASTER íntegro (cópias)".
+Validação real: `npm run smoke:dist` abre o `.exe`, adiciona uma pasta, roda uma missão completa
+com o dublê TEST-STUB e confere o arquivo gerado (instalação per-user, não exige admin).
 
 ## 18. Checkpoints e recuperação
 
@@ -299,13 +386,16 @@ Minha-ia/
 ├── CLAUDE.md · package.json · master.manifest.json · master.lock.json · .mcp.json
 ├── bin/minhaia.js
 ├── src/{config.js, master/, registry/, selection/, engine/, security/, agents/,
-│        skills/, runtime/, missions/{store,manager,worker,instrument,views}.js, server/}
+│        skills/, runtime/, missions/{store,manager,worker,instrument,views,scope}.js,
+│        projects/{store,browse}.js, chat/{store,reconcile}.js, server/}
 ├── ui/{index.html, styles.css, app.js, icon.svg}
-├── scripts/mcp-playwright.js
+├── desktop/{main.js, preload.js}
+├── scripts/{mcp-playwright.js, smoke-dist.js, serve.cmd, desktop.cmd, check.cmd}
 ├── .claude/{settings.json, hooks/, rules/}   (+ agents/, skills/ gerados)
 ├── test/*.test.js · test/fixtures/stub-adapters.js (dublê de LLM, só teste)
 ├── tsconfig.json · eslint.config.js
-├── docs/{ARQUITETURA.md, DECISOES.md}
+├── docs/{ARQUITETURA.md, DECISOES.md, RELATORIO.md}
+├── dist/   (gerado por `npm run dist`: app empacotado + instalador NSIS, gitignored)
 ├── vendor/master/{ai-orchestrator, ia-avancado}   (gerado, gitignored)
 ├── data/{jobs,missions,memoria,logs,…}   (runtime, gitignored)   · .secrets/ (gitignored)
 ```
@@ -316,7 +406,11 @@ Minha-ia/
   skills:[{id,score,matched,requires,origin}], rules:[id], governance:{reviewerRequired,
   securityRequired,vetoHolders,teamRecommended}, model:{chosen,tipoTarefa,motivo,fallback:[{id,provider,keyConfigured}]}}`
 - `runMission(objetivo) → {status:'CONCLUIDA'|'FALHA'|'BLOQUEADO', missionId, state, events, selection, reason?}`
-- `verify() → {ok, problems, masterGit:{clean}, masterDrift, vendorTampered, missingLocal}`
+- `verify() → {ok, problems, masterGit:{clean}, masterDrift, vendorTampered, missingLocal, limited}`
+- Projeto: `{id:'prj_…', name, path, addedAt, lastUsedAt}`; validação → 400 `{error}`; missão →
+  `{objective, projectId}`; projeto inválido/removido na criação → 404.
+- Chat: mensagem `{id:'msg_…', role:'user'|'assistant', text, missionId?, ts}`; `POST` devolve
+  `{message, mission}`; `GET` devolve `{messages}` (mais antigas primeiro, `limit` ≤ 200 no servidor).
 - Contrato de tarefa do motor (`agentes/core/contrato.js`): INPUT/CONTEXT/OBJECTIVE/TOOLS/
   CONSTRAINTS/EXPECTED_OUTPUT/SUCCESS_CRITERIA.
 - Hooks: stdin JSON do Claude Code; `exit 2` + stderr = bloqueio.
@@ -327,10 +421,17 @@ Minha-ia/
 ## 21. Pendências (próximas fases)
 
 - Missão real com LLM: **NÃO VALIDADA — PROVIDER INDISPONÍVEL** neste ambiente (sem chave;
-  Groq/OpenRouter bloqueados pela rede do container). Pipeline validado com dublê de teste.
+  Groq/OpenRouter bloqueados pela rede do container). Pipeline validado com dublê de teste —
+  inclusive dentro do `.exe` empacotado (`npm run smoke:dist`).
+- Configurar chaves de provedor é manual (por design: a IA nunca grava segredo); `minhaia keys`
+  e o painel "Configurar provedor" da UI mostram o que falta e o caminho real do `.env`.
 - Perguntas ao usuário: o Planejador do MASTER roda em modo AUTO e só *marca*
   `decisaoUsuario`; a UI mostra, mas não há fluxo de resposta que pause a missão.
 - Sandbox cobre só `node` (outros interpretadores são recusados); o bloqueio de rede é na camada
   JS do Node, não do SO — proteção forte continua sendo o SO (namespace de rede/container).
-- Windows/macOS: sem garantia de grupo de processos/identidade (ver §12, Plataformas).
+- Windows: identidade de processo usa PID **+ instante de criação** (`procStart` via PowerShell) e
+  o encerramento de árvore usa `taskkill /T /F`; a recuperação de órfãos quando o worker já morreu
+  (sem raiz de árvore) segue impossível — limitação aceita.
+- Pacote desktop: sem ícone próprio (usa o do Electron) e sem assinatura de código (instalador
+  sai "unknown publisher"); demais limitações de sandbox valem igual.
 - Painel de observabilidade lê as 15 missões mais recentes (sem banco de métricas).

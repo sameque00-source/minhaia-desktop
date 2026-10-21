@@ -6,6 +6,7 @@ const ROOT = path.resolve(__dirname, '..');
 const MASTER_CANDIDATES = [
   path.join(ROOT, '..', 'claude-mestre-final-skills-em-lotes-completo'),
   path.join(ROOT, '..', 'CLAUDE-MESTRE-FINAL-SKILLS-EM-LOTES-COMPLETO'),
+  path.join(ROOT, '..', '..', 'ia-library', 'CLAUDE-MESTRE-FINAL'),
 ];
 
 const MASTER_MARKER = path.join('01-USO-DIRETO-CLAUDE', '.claude', 'agents');

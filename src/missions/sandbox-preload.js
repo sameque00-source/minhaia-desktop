@@ -4,6 +4,14 @@
 // rede ficam bloqueadas de forma não reconfigurável (propriedades não graváveis e não
 // configuráveis). Escutar numa porta continua permitido (servidores gerados são testados pelo
 // motor a partir do worker, fora da sandbox). Opt-out consciente: MINHAIA_SANDBOX_ALLOW_NETWORK=1.
+// A criação de links (symlink/junction/hardlink) é bloqueada SEMPRE (ver bloco no fim do arquivo).
+const lock = (obj, key, value) => {
+  if (!obj) return;
+  // enumerabilidade original preservada: os imports ESM nomeados (node:dns etc.) dependem dela
+  const d = Object.getOwnPropertyDescriptor(obj, key);
+  Object.defineProperty(obj, key, { value, writable: false, configurable: false, enumerable: d ? d.enumerable : false });
+};
+
 if (process.env.MINHAIA_SANDBOX_ALLOW_NETWORK !== '1') {
   const MSG = 'saída de rede bloqueada pela sandbox da MinhaIA (código gerado não acessa a rede)';
   const deny = function denyNetwork() {
@@ -11,12 +19,6 @@ if (process.env.MINHAIA_SANDBOX_ALLOW_NETWORK !== '1') {
   };
   const denyAsync = function denyNetworkAsync() {
     return Promise.reject(Object.assign(new Error(MSG), { code: 'ERR_MINHAIA_NETWORK_DENIED' }));
-  };
-  const lock = (obj, key, value) => {
-    if (!obj) return;
-    // enumerabilidade original preservada: os imports ESM nomeados (node:dns etc.) dependem dela
-    const d = Object.getOwnPropertyDescriptor(obj, key);
-    Object.defineProperty(obj, key, { value, writable: false, configurable: false, enumerable: d ? d.enumerable : false });
   };
   const net = require('net');
   // lookup só resolve IP literal (e localhost) localmente, sem consulta: mantém
@@ -70,4 +72,27 @@ if (process.env.MINHAIA_SANDBOX_ALLOW_NETWORK !== '1') {
   }
   lock(globalThis, 'fetch', denyAsync);
   for (const k of ['WebSocket', 'EventSource']) if (k in globalThis) lock(globalThis, k, deny);
+}
+
+// LINKS — bloqueio incondicional (independe de rede). Confirmado em teste: o modelo de permissões
+// do Node NÃO resolve symlinks/junctions ao conferir caminhos — gravar através de uma junction
+// criada dentro do workspace (que aponta para fora) grava fora do grant. Se o código gerado não
+// consegue CRIAR o link, o caminho de escape deixa de existir; links pré-existentes no workspace
+// são recusados antes de executar (instrument.js:findWorkspaceLink).
+{
+  const MSG = 'criação de link (symlink/junction/hardlink) bloqueada pela sandbox da MinhaIA';
+  const denySync = function denyLink() {
+    throw Object.assign(new Error(MSG), { code: 'ERR_MINHAIA_LINK_DENIED' });
+  };
+  const denyAsync = function denyLinkAsync() {
+    return Promise.reject(Object.assign(new Error(MSG), { code: 'ERR_MINHAIA_LINK_DENIED' }));
+  };
+  const fs = require('fs');
+  const fsp = require('fs/promises');
+  lock(fs, 'symlinkSync', denySync);
+  lock(fs, 'linkSync', denySync);
+  lock(fs, 'symlink', denyAsync);
+  lock(fs, 'link', denyAsync);
+  lock(fsp, 'symlink', denyAsync);
+  lock(fsp, 'link', denyAsync);
 }

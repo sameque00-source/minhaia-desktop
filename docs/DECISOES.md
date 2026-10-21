@@ -17,7 +17,10 @@
 | Memória | Sim — `memoria/` (8 tipos) | Reutilizar; estado em `data/` | vendor |
 | Autocorreção | Sim — `autocorrecao/` | Reutilizar | vendor |
 | Pesquisa web | Sim — `pesquisa/` | Reutilizar | vendor |
-| Multimídia / projetos | Sim | Reutilizar (disponível; não exposto na CLI ainda) | vendor |
+| Multimídia | Sim | Reutilizar (disponível; não exposto na CLI ainda) | vendor |
+| Pastas de projeto do usuário | Parcial (sistema interno de projetos do motor) | Implementar ponteiro explícito `MINHAIA_PROJECT_DIR` no workspace, sem copiar a pasta | `src/projects`, patch `project-workspace` |
+| Chat persistente por projeto | **Não** | Implementar como histórico + missões reais (sem segundo agente); resposta perdida em restart é reconciliada na leitura (ADR-21) | `src/chat`, API, UI |
+| App desktop / empacotamento | **Não** | Electron como casca fina sobre a mesma API; instalador NSIS com links de runtime excluídos e recriados no boot (ADR-19/ADR-20) | `desktop/`, `package.json` (build), `scripts/smoke-dist.js` |
 | MCP claude-flow + Playwright | Sim — `.mcp.json` (só no backup) | Adaptar: versões fixadas, wrapper de browser | `.mcp.json`, `scripts/` |
 | Permissões `settings.json` | Sim | Adaptar a lista `deny` | `.claude/settings.json` |
 | Hooks | **Não** (`"hooks": {}`) | Implementar | `.claude/hooks` |
@@ -72,6 +75,9 @@ Re-sync não apaga memória; `test-master` e os testes redirecionam para diretó
 | `gateway-log-redaction` | log gravava corpo de erro de provedor sem redação |
 | `extra-specialists` | registro do motor tinha 19 de 25 agentes |
 | `skills-context` | motor injetava só a persona; passa a injetar Skills selecionadas por tarefa + agente |
+| `project-workspace` | fixa o workspace do motor em `MINHAIA_PROJECT_DIR` (pasta real escolhida pelo usuário) |
+| `workspace-realpath-guard` | `node --permission` não resolve junction/symlink; gravação confere o realpath contra a raiz |
+| `ferramentas-erro-link` (3×) | erro de confinamento vira `{ok:false, erro}` em vez de derrubar a missão inteira |
 
 ## ADR-05 — Seleção determinística
 
@@ -82,7 +88,8 @@ definitiva continua sendo do Planejador (LLM) durante a missão.
 ## ADR-06 — Missão sem chave é BLOQUEADA
 
 Sem chave de provedor, `run` retorna `BLOQUEADO` com o motivo; não há provedor/agente simulado
-fora de `test/`.
+fora de `test/`. A IA nunca grava segredos: `minhaia keys` só mostra status (nomes de variáveis) e
+o que colar em `.secrets/.env`, que é editado pelo humano.
 
 ## ADR-07 — Revisão com veto antes de concluir a etapa
 
@@ -154,7 +161,66 @@ processo só por PID (risco de matar grupo alheio com PID reaproveitado). `secur
 ressalvas: o código gerado alcançava a API local pela rede. Decisões: worker encerra o próprio
 grupo ao perder o pai; identidade por PID + instante de início; zumbi = morto; bloqueio de
 saída de rede no código gerado via preload imutável (token na API não resolveria: qualquer
-processo local obtém o que o navegador obtém); recusa de links no workspace.
+processo local obtém o que o navegador obtém); recusa de links que escapam do workspace (link
+interno é aceito) e bloqueio de criação de links no preload.
+
+## ADR-16 — Pasta do usuário é ponteiro, não cópia
+
+O sistema interno de projetos do MASTER não modela "pasta existente escolhida pelo usuário" com
+garantias de confinamento. Decisão: registrar a pasta em `src/projects` (fora do MASTER) e passar
+`MINHAIA_PROJECT_DIR` ao worker; um patch mínimo faz o workspace do motor apontar para ela. Assim
+a IA lê e escreve nos arquivos reais, sem copiar/duplicar o projeto e sem alterar o motor além do
+necessário. O registro valida MASTER/`.secrets`/raiz e nunca apaga arquivos ao remover.
+
+## ADR-17 — Chat é histórico + missões, não um segundo agente
+
+Cada mensagem do usuário cria uma missão real do motor; o histórico (`data/chat/<projectId>.jsonl`)
+serve de contexto (últimas 6 trocas, ≤1800 chars) e a resposta é o resumo objetivo da missão
+(status, arquivos, motivo), gravado no evento `finished`. Evita manter um agente conversacional
+paralelo, mantém rastreabilidade (message → missionId) e reaproveita o pipeline já testado. Custo:
+resposta depende do servidor vivo no fim da missão (sem reconciliação pós-restart).
+
+## ADR-18 — Links: confinar por realpath, não proibir todo link
+
+Proibir qualquer link quebraria projetos reais (node_modules com junction, monorepos). A política
+passa a ser: link que resolve **dentro** do workspace é aceito; quebrado, que escapa ou hardlink é
+recusado; diretórios pesados não são percorridos (filhos diretos ainda são checados). A criação de
+links pelo código gerado é bloqueada no preload. A gravação confere o realpath (`assertInside`),
+porque `node --permission` confia no caminho textual e junction no Windows escapava do grant
+[CONFIRMADO com teste de regressão].
+
+## ADR-19 — Desktop é casca fina sobre a mesma API
+
+O app desktop (Electron) inicia **a mesma** API em processo, em porta efêmera de loopback, e
+carrega a mesma UI — nenhuma regra de negócio no shell. Renderer com `contextIsolation` +
+`sandbox` e sem `nodeIntegration`; os privilégios são só dois, via `preload.js`: diálogo nativo
+de pasta (`chooseFolder`) e abrir a pasta `.secrets` no gerenciador de arquivos
+(`openSecretsFolder` — nenhum valor de chave cruza a ponte). Navegação para fora vira abertura no
+navegador do sistema (só `https:`), instância única, e o fechamento dispara o `shutdown` da API
+(mesma garantia de interromper missões do `serve`). Smoke test real via Playwright `_electron`
+com a janela oculta.
+
+## ADR-20 — Pacote desktop sem os links do repo; verify limitado sem a origem
+
+O empacotamento (electron-builder/NSIS, `asar: false` porque o motor faz `require`/`fork` por
+caminho real) levaria, se copiasse os links de runtime, symlinks **absolutos** apontando para a
+máquina do build (ou pior: `.secrets` dentro do `.exe`). Decisão: os 7 links do manifesto são
+**excluídos** do pacote (conferido por teste contra `master.runtimeLinks`) e recriados no boot
+por `ensureRuntimeLinks()` apontando para o `data/` do próprio app — nunca sobrescrevendo link
+existente (link desviado continua detectável pelo `verify`). Sem o MASTER de origem, `verify`
+cai em **modo limitado**: valida cópias contra os hashes do lock com HEAD do lock, sem inventar
+prova de somente leitura que não pode ser feita. No Electron empacotado, worker e código gerado
+rodam com `ELECTRON_RUN_AS_NODE=1` (senão `MinhaIA.exe` reabriria janelas em vez de rodar Node).
+Validação real: `npm run smoke:dist` roda missão completa com dublê TEST-STUB dentro do `.exe`
+[CONFIRMADO nesta máquina].
+
+## ADR-21 — Fechamento do chat acontece na leitura (reconciliação idempotente)
+
+A resposta-resumo dependia do evento `finished` no processo certo; restart antes disso deixava o
+pedido sem resposta. Em vez de um job de recuperação no boot (mais um caminho para estados
+inconsistentes), o `GET /api/projects/:id/chat` chama `reconcile()`: pedidos cujo job já está em
+status terminal ganham o resumo na hora — idempotente, não duplica, não altera a missão e tolera
+registro corrompido. [CONFIRMADO por teste de reinício do servidor com o arquivo do chat mutilado.]
 
 ## Conflitos encontrados no MASTER (registrados, não alterados)
 

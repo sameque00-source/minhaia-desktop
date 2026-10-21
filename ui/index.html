@@ -3,94 +3,78 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>MinhaIA</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><span class="logo" aria-hidden="true">◆</span> MinhaIA</div>
-    <div class="system" id="system" aria-live="polite">carregando estado do sistema…</div>
-  </header>
-
+  <div class="system" id="system" aria-live="polite" hidden>carregando estado do sistema…</div>
+  <div class="card keys-guide" id="keys-guide" hidden></div>
   <div class="layout">
-    <aside class="sidebar">
-      <form id="new-mission" class="card composer">
-        <label for="objective" class="label">Nova missão</label>
-        <textarea id="objective" name="objective" rows="5" maxlength="4000" required
-          placeholder="Descreva o que você quer. Ex.: Crie um aplicativo 3D premium."></textarea>
-        <div class="composer-actions">
-          <span class="hint">O Orquestrador escolhe agentes, Skills e modelo.</span>
-          <button type="submit" id="send">Enviar missão</button>
-        </div>
-        <p class="form-error" id="form-error" hidden></p>
+    <aside class="sidebar" aria-label="Navegação principal">
+      <div class="sidebar-brand"><button id="sidebar-toggle" class="icon-button" aria-label="Recolher barra lateral" title="Barra lateral">☰</button><span class="logo" aria-hidden="true">✳</span><strong>MinhaIA</strong></div>
+      <button id="btn-new" class="nav-button primary-nav"><span class="nav-glyph">＋</span>Nova conversa</button>
+      <div class="side-heading"><span>Pasta de trabalho</span></div>
+      <div class="folder-card"><span class="folder-name" id="active-folder">Nenhuma pasta selecionada</span><button type="button" class="secondary" id="project-pick">Escolher pasta…</button></div>
+      <button id="personalize" class="nav-button"><span class="nav-glyph">⚙</span>Configurações</button>
+      <details class="more-menu"><summary class="nav-button"><span class="nav-glyph">•••</span>Mais <span class="nav-end">⌄</span></summary><button id="btn-browse" class="nav-button sub-nav"><span class="nav-glyph">▤</span>Arquivos do projeto</button></details>
+      <div class="side-heading"><span>Projetos recentes</span><button id="project-add-open" class="icon-button" aria-label="Adicionar projeto" title="Adicionar projeto">＋</button></div>
+      <label class="search-box"><span aria-hidden="true">⌕</span><input id="project-search" type="search" placeholder="Buscar projetos" aria-label="Buscar projetos"></label>
+      <div class="side-tools"><span>Recentes</span><button id="project-sort" class="text-button" title="Alternar ordenação dos projetos">⇅</button></div>
+      <form id="project-add-form" class="project-add" hidden>
+        <label class="sr-only" for="project-path">Pasta do projeto</label><input id="project-path" placeholder="C:\Users\voce\meu-projeto" spellcheck="false" autocapitalize="off">
+        <button type="submit" class="secondary" id="project-add-btn">Adicionar</button>
+        <p class="form-error" id="project-error" hidden></p>
       </form>
-      <div class="card">
-        <div class="label">Missões</div>
-        <ul id="missions" class="missions"><li class="muted">nenhuma missão ainda</li></ul>
-      </div>
+      <ul id="projects" class="projects"><li class="muted">nenhum projeto ainda</li></ul>
+      <div class="side-heading session-heading"><span id="session-heading">Conversas</span><button id="session-new" class="icon-button" aria-label="Nova conversa neste projeto" title="Nova conversa">＋</button></div>
+      <ul id="sessions" class="sessions"><li class="muted">selecione um projeto</li></ul>
+      <details class="task-history"><summary class="side-heading">Tarefas recentes</summary><ul id="missions" class="missions"><li class="muted">nenhuma tarefa ainda</li></ul></details>
+      <div class="profile"><span class="avatar">M</span><span><b>MinhaIA</b><small>Assistente local</small></span></div>
     </aside>
 
     <main class="main">
-      <section id="empty" class="card empty">
-        <h1>Envie uma missão</h1>
-        <p>Escreva o objetivo em linguagem natural. A MinhaIA analisa, planeja em um grafo de tarefas,
-          escolhe agentes e Skills da infraestrutura MASTER, executa, testa, revisa e corrige.</p>
+      <header class="workspace-header"><button type="button" id="mobile-sidebar-toggle" class="icon-button mobile-menu-toggle" aria-label="Abrir navegação">☰</button><div class="project-chip">Pasta atual: <strong id="workspace-project">Nenhuma pasta</strong></div><div class="window-controls" aria-label="Controles da janela"><button id="window-minimize" class="icon-button" aria-label="Minimizar" title="Minimizar" disabled>−</button><button id="window-maximize" class="icon-button" aria-label="Maximizar" title="Maximizar" disabled>□</button><button id="window-close" class="icon-button" aria-label="Fechar" title="Fechar" disabled>×</button></div></header>
+      <section id="empty" class="dashboard" aria-labelledby="welcome-title">
+        <div class="welcome"><div class="mascot" aria-hidden="true">✳</div><h1 id="welcome-title">O que vamos construir hoje?</h1><p class="welcome-sub" id="welcome-sub">Escolha uma pasta de trabalho e conte à MinhaIA o que você precisa.</p><div class="suggestions"><button type="button" class="suggestion" data-prompt="Analise este projeto e me explique sua estrutura.">⌕ &nbsp; Analisar meu projeto</button><button type="button" class="suggestion" data-prompt="Investigue este erro e proponha uma correção.">⌁ &nbsp; Corrigir um erro</button><button type="button" class="suggestion" data-prompt="Ajude-me a criar uma funcionalidade neste projeto.">＋ &nbsp; Criar uma funcionalidade</button></div></div>
+        <div class="dashboard-panel" hidden>
+          <div class="dashboard-head"><div class="dashboard-tabs" role="tablist" aria-label="Painel de atividade"><button class="dashboard-tab active" id="overview-tab" role="tab" aria-selected="true" data-dashboard-tab="overview">Visão geral</button><button class="dashboard-tab" id="models-tab" role="tab" aria-selected="false" data-dashboard-tab="models">Modelos</button></div><label class="period-control"><span class="sr-only">Período</span><select id="metrics-period"><option value="7d">7 dias</option><option value="30d" selected>30 dias</option><option value="90d">90 dias</option><option value="all">Todo o período</option></select></label></div>
+          <div id="dashboard-overview" class="dashboard-content" role="tabpanel" aria-labelledby="overview-tab">
+            <div class="metric-grid">
+              <article class="metric"><span>Sessões</span><strong id="metric-sessions">—</strong><small>missões iniciadas</small></article>
+              <article class="metric"><span>Mensagens</span><strong id="metric-messages">—</strong><small>pedidos persistidos</small></article>
+              <article class="metric"><span>Tokens</span><strong id="metric-tokens">Indisponível</strong><small>o motor não registra uso de tokens</small></article>
+              <article class="metric"><span>Dias ativos</span><strong id="metric-days">—</strong><small>com atividade registrada</small></article>
+              <article class="metric"><span>Horário de pico</span><strong id="metric-peak">—</strong><small>hora local</small></article>
+              <article class="metric"><span>Modelo mais usado</span><strong id="metric-model">—</strong><small id="metric-model-caption">chamadas registradas</small></article>
+            </div>
+            <div class="activity-head"><div><h2>Atividade</h2><p>Missões criadas por dia</p></div><span class="activity-legend"><i></i>menos <b></b><b></b><b></b><b></b> mais</span></div>
+            <div id="activity-grid" class="activity-grid" aria-label="Atividade recente"></div>
+            <div class="activity-foot"><span id="activity-range">Dados locais das missões</span><span>Sem estimativas de tokens</span></div>
+          </div>
+          <div id="dashboard-models" class="dashboard-content models-content" role="tabpanel" aria-labelledby="models-tab" hidden><div class="models-head"><div><h2>Catálogo disponível</h2><p>Modelos gratuitos declarados no catálogo local do orquestrador.</p></div><span class="chip info">Roteamento automático</span></div><p class="model-routing-note">A seleção manual ainda não faz parte do contrato de execução; cada tarefa usa o roteador e os fallbacks reais do motor.</p><div id="models-list" class="models-list"><p class="muted">carregando catálogo…</p></div><h2 class="used-models-title">Uso registrado</h2><div id="used-models" class="used-models"><p class="muted">Nenhuma chamada de modelo registrada neste período.</p></div></div>
+          <details class="observability-box"><summary>Observabilidade ao vivo <span class="live" id="live">● ao vivo</span></summary><div id="obs"></div></details>
+        </div>
       </section>
 
-      <section id="mission" class="card" hidden>
-        <div class="mission-head">
-          <div>
-            <div class="objective" id="m-objective"></div>
-            <div class="meta" id="m-meta"></div>
-          </div>
-          <div class="actions">
-            <button id="btn-start" class="secondary" hidden disabled title="Inicia a missão (criada ou interrompida antes do plano)">Iniciar</button>
-            <button id="btn-cancel" class="danger" disabled title="Disponível enquanto a missão está em execução">Cancelar</button>
-            <button id="btn-resume" class="secondary" disabled title="Disponível para missões interrompidas que já têm estado no motor">Retomar</button>
-          </div>
-        </div>
-        <div class="progress" aria-label="progresso"><div id="m-progress"></div></div>
-        <div class="banner" id="m-banner" hidden></div>
+      <section id="chat" class="chat-page" hidden>
+        <div class="chat-top"><div><div class="breadcrumb"><span id="chat-title"></span><span>›</span><span id="chat-session-title">Nova conversa</span></div><div class="meta" id="chat-meta"></div></div><div class="chat-state" id="chat-state">Pronto</div></div>
+        <div id="chat-messages" class="timeline chat"></div>
+        <div id="browse" class="browse" hidden><div class="browse-bar"><button type="button" id="browse-up" class="secondary">‹</button><code id="browse-path">/</code><input id="browse-search" type="search" placeholder="buscar arquivo por nome…"></div><div class="files"><ul id="browse-list" class="file-list"></ul><pre id="browse-view" class="code">selecione um arquivo</pre></div></div>
+        <form id="chat-form" class="composer chat-composer"><label class="sr-only" for="chat-input">Mensagem para o agente</label><textarea id="chat-input" rows="3" maxlength="4000" placeholder="Envie uma mensagem para a MinhaIA… (Enter envia · Shift+Enter quebra linha)"></textarea><div class="composer-bottom"><div class="composer-chips"><span class="context-chip" id="chat-context">Projeto selecionado</span><label class="context-select"><span class="sr-only">Modelo</span><select id="chat-model-select" aria-label="Modelo de IA"><option value="auto">Automático</option></select></label><button type="button" class="context-chip reasoning-unavailable" disabled title="O motor atual não transmite esforço de raciocínio ao provedor">Raciocínio não disponível</button></div><button type="submit" id="chat-send" class="send-button" aria-label="Enviar mensagem" title="Enviar">↑</button></div><p class="form-error" id="chat-error" hidden></p></form>
+      </section>
 
-        <nav class="tabs" role="tablist">
-          <button role="tab" data-tab="conversa" aria-selected="true">Conversa</button>
-          <button role="tab" data-tab="plano">Plano</button>
-          <button role="tab" data-tab="grafo">Task Graph</button>
-          <button role="tab" data-tab="agentes">Agentes &amp; Skills</button>
-          <button role="tab" data-tab="execucao">Execução</button>
-          <button role="tab" data-tab="arquivos">Arquivos</button>
-          <button role="tab" data-tab="testes">Testes &amp; Revisão</button>
-          <button role="tab" data-tab="logs">Logs</button>
-        </nav>
-
-        <div class="tab" id="tab-conversa"></div>
-        <div class="tab" id="tab-plano" hidden></div>
-        <div class="tab" id="tab-grafo" hidden></div>
-        <div class="tab" id="tab-agentes" hidden></div>
-        <div class="tab" id="tab-execucao" hidden></div>
-        <div class="tab" id="tab-arquivos" hidden>
-          <div class="files">
-            <ul id="file-list" class="file-list"></ul>
-            <pre id="file-view" class="code">selecione um arquivo</pre>
-          </div>
-        </div>
-        <div class="tab" id="tab-testes" hidden></div>
-        <div class="tab" id="tab-logs" hidden>
-          <div class="log-filter">
-            <label for="log-type">Tipo</label>
-            <select id="log-type"><option value="">todos</option></select>
-          </div>
-          <div id="log-list" class="log-list"></div>
-        </div>
+      <section id="mission" class="mission-page" hidden>
+        <div class="mission-head"><div><div class="objective" id="m-objective"></div><div class="meta" id="m-meta"></div></div><div class="actions"><button id="btn-start" class="secondary" hidden disabled>Iniciar</button><button id="btn-cancel" class="danger" disabled>Cancelar</button><button id="btn-resume" class="secondary" disabled>Retomar</button></div></div>
+        <div class="progress" aria-label="progresso"><div id="m-progress"></div></div><div class="banner" id="m-banner" hidden></div>
+        <nav class="tabs" role="tablist"><button role="tab" data-tab="conversa" aria-selected="true">Conversa</button><button role="tab" data-tab="plano">Plano</button><button role="tab" data-tab="grafo">Task Graph</button><button role="tab" data-tab="agentes">Agentes &amp; Skills</button><button role="tab" data-tab="execucao">Execução</button><button role="tab" data-tab="arquivos">Arquivos</button><button role="tab" data-tab="testes">Testes &amp; Revisão</button><button role="tab" data-tab="logs">Logs</button></nav>
+        <div class="tab" id="tab-conversa"></div><div class="tab" id="tab-plano" hidden></div><div class="tab" id="tab-grafo" hidden></div><div class="tab" id="tab-agentes" hidden></div><div class="tab" id="tab-execucao" hidden></div><div class="tab" id="tab-arquivos" hidden><div class="files"><ul id="file-list" class="file-list"></ul><pre id="file-view" class="code">selecione um arquivo</pre></div></div><div class="tab" id="tab-testes" hidden></div><div class="tab" id="tab-logs" hidden><div class="log-filter"><label for="log-type">Tipo</label><select id="log-type"><option value="">todos</option></select></div><div id="log-list" class="log-list"></div></div>
       </section>
     </main>
-
-    <aside class="observability card" aria-label="Observabilidade">
-      <div class="label">Observabilidade <span class="live" id="live">● ao vivo</span></div>
-      <div id="obs"></div>
-    </aside>
   </div>
+
+  <div class="composer-dock"><form id="new-mission" class="composer new-composer"><label class="sr-only" for="objective">Descreva uma tarefa para a MinhaIA</label><textarea id="objective" name="objective" rows="2" maxlength="4000" required placeholder="Envie uma mensagem para a MinhaIA… (Enter envia · Shift+Enter quebra linha)"></textarea><div class="composer-bottom"><div class="composer-chips"><label class="context-select"><span class="sr-only">Projeto ativo</span><select id="command-project" aria-label="Projeto ativo"><option value="">Escolha uma pasta primeiro</option></select></label><label class="context-select model-select"><span class="sr-only">Modelo</span><select id="model-select" aria-label="Modelo de IA"><option value="auto">Automático · orquestrador</option></select></label><button type="button" class="context-chip reasoning-unavailable" disabled title="O motor atual não transmite esforço de raciocínio ao provedor">Raciocínio não disponível</button></div><button type="submit" id="send" class="send-button" aria-label="Enviar mensagem" title="Enviar">↑</button></div><p class="form-error" id="form-error" hidden></p></form><p class="dock-note">A MinhaIA pode cometer erros. Revise as alterações antes de usá-las.</p></div>
 </body>
 </html>

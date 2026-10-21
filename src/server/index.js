@@ -5,10 +5,17 @@ const { paths } = require('../config');
 const { MissionManager } = require('../missions/manager');
 const views = require('../missions/views');
 const store = require('../missions/store');
+const projects = require('../projects/store');
+const browse = require('../projects/browse');
+const chat = require('../chat/store');
+const chatSessions = require('../chat/sessions');
+const { resumoDaMissao, reconcile } = require('../chat/reconcile');
 const registry = require('../registry');
 const { select } = require('../selection/selector');
 const { providerStatus } = require('../engine');
 const { verify } = require('../master/verify');
+const { ensureRuntimeLinks } = require('../master/sync');
+const modelCatalog = require('../models/catalog');
 
 const UI_DIR = path.join(paths.ROOT, 'ui');
 const MAX_BODY = 16 * 1024;
@@ -73,6 +80,7 @@ function serveStatic(req, res, urlPath) {
 }
 
 function createServer({ manager = new MissionManager() } = {}) {
+  ensureRuntimeLinks(); // pacote desktop: links de runtime ausentes são recriados para o data/ do app
   const sseClients = new Set();
 
   function openSSE(req, res) {
@@ -91,6 +99,21 @@ function createServer({ manager = new MissionManager() } = {}) {
     for (const c of sseClients) if (!c.filter || c.filter === jobId) c.res.write(frame);
   });
 
+  const unsubscribeChat = manager.subscribe((jobId, event) => {
+    if (event.type !== 'finished') return;
+    try {
+      const job = store.get(jobId);
+      if (!job || !job.chatMessageId || !job.projectId) return;
+      const text = resumoDaMissao(job);
+      if (text) {
+        chat.append(job.projectId, { role: 'assistant', text, missionId: jobId, sessionId: job.chatSessionId || null });
+        chatSessions.touch(job.projectId, job.chatSessionId || null);
+      }
+    } catch (e) {
+      process.stderr.write(`[minhaia api] chat: ${e.message}\n`);
+    }
+  });
+
   function runningSummary() {
     return [...manager.running.keys()].map((id) => {
       const d = views.detail(id);
@@ -99,18 +122,24 @@ function createServer({ manager = new MissionManager() } = {}) {
     });
   }
 
-  /** @type {Array<[string, RegExp, (req: any, url: URL, res: any, params: string[]) => any]>} */
+  function reqProject(id) {
+    const p = projects.get(id);
+    if (!p) throw httpError(404, 'projeto não encontrado');
+    return p;
+  }
+
+  /** @type {Array<[string, RegExp, (req: any, url: URL, res: any, params: string[]) => any, boolean?]>} */
   const routes = [
     ['GET', /^\/api\/health$/, () => ({ ok: true })],
     ['GET', /^\/api\/system$/, () => {
       const v = verify();
       const p = providerStatus();
       return {
-        master: { ok: v.ok, problems: v.problems, head: v.masterHead, files: v.files },
+        master: { ok: v.ok, problems: v.problems, head: v.masterHead, files: v.files, limited: !!v.limited },
         agents: registry.loadAgents().length,
         skills: registry.loadSkills().length,
         rules: registry.loadRules().map((r) => r.id),
-        providers: { configured: p.configured, missing: p.missing },
+        providers: { configured: p.configured, missing: p.missing, envFile: paths.SECRETS_ENV },
         missionsBlocked: p.configured.length === 0,
         limits: { maxConcurrent: manager.maxConcurrent, timeoutMs: manager.timeoutMs },
       };
@@ -121,15 +150,103 @@ function createServer({ manager = new MissionManager() } = {}) {
       return registry.loadSkills().filter((s) => !q || `${s.id} ${s.description}`.toLowerCase().includes(q)).map(({ file: _file, ...s }) => s);
     }],
     ['GET', /^\/api\/rules$/, () => registry.loadRules()],
+    ['GET', /^\/api\/models$/, () => modelCatalog.list()],
+    ['GET', /^\/api\/metrics$/, (_, url) => {
+      const period = url.searchParams.get('period') || '30d';
+      const days = period === '7d' ? 7 : period === '90d' ? 90 : period === 'all' ? null : 30;
+      const since = days === null ? 0 : Date.now() - days * 86400000;
+      const jobs = store.list().filter((j) => Date.parse(j.createdAt) >= since);
+      const conversations = projects.list().flatMap((p) => chatSessions.list(p.id).map((session) => ({ ...session, messages: chat.list(p.id, { sessionId: session.id }) })));
+      const activeConversations = conversations.filter((s) => Date.parse(s.createdAt) >= since);
+      const activity = new Map(); const modelCounts = new Map();
+      for (const job of jobs) {
+        activity.set(job.createdAt.slice(0, 10), (activity.get(job.createdAt.slice(0, 10)) || 0) + 1);
+      }
+      for (const job of store.list()) for (const event of store.readEvents(job.id, { types: ['llm.end'] })) {
+        if (Date.parse(event.ts || job.createdAt) >= since && event.model) modelCounts.set(event.model, (modelCounts.get(event.model) || 0) + 1);
+      }
+      const messages = conversations.flatMap((s) => s.messages).filter((m) => Date.parse(m.ts) >= since).length;
+      const countDays = days || 90;
+      const grid = Array.from({ length: countDays }, (_, i) => {
+        const d = new Date(Date.now() - (countDays - i - 1) * 86400000).toISOString().slice(0, 10);
+        return { date: d, count: activity.get(d) || 0 };
+      });
+      const sessionHours = new Map();
+      for (const s of activeConversations) { const h = new Date(s.createdAt).getHours(); sessionHours.set(h, (sessionHours.get(h) || 0) + 1); }
+      return { period, sessions: activeConversations.length, messages, tokens: null, activeDays: [...activity.values()].filter((n) => n > 0).length,
+        peakHour: sessionHours.size ? [...sessionHours].sort((a, b) => b[1] - a[1])[0][0] : null,
+        topModel: modelCounts.size ? [...modelCounts].sort((a, b) => b[1] - a[1])[0][0] : null,
+        models: [...modelCounts].map(([id, count]) => ({ id, count })).sort((a, b) => b.count - a.count), activity: grid };
+    }],
     ['POST', /^\/api\/select$/, async (req) => {
       const body = await readBody(req);
       if (typeof body.task !== 'string' || !body.task.trim()) throw httpError(400, 'campo "task" obrigatório');
       return select(body.task.slice(0, 4000));
     }],
+    // ---------------------------------------------------------------- projetos do usuário
+    ['GET', /^\/api\/projects$/, () => projects.list().map((p) => ({ ...p, available: fs.existsSync(p.path) }))],
+    ['POST', /^\/api\/projects$/, async (req, _url, res) => {
+      const body = await readBody(req);
+      const { project, created } = projects.add(body.path);
+      res.statusCode = created ? 201 : 200;
+      return { ...project, available: true, created };
+    }],
+    ['PUT', /^\/api\/projects\/([^/]+)$/, (_, __, ___, [id]) => {
+      const p = projects.get(id);
+      if (!p) throw httpError(404, 'projeto não encontrado');
+      return { ...projects.touch(id), available: fs.existsSync(p.path) };
+    }, true],
+    ['DELETE', /^\/api\/projects\/([^/]+)$/, (_, __, ___, [id]) => {
+      const r = projects.remove(id);
+      if (!r.removed) throw httpError(404, r.reason);
+      return { ok: true };
+    }, true],
+    ['GET', /^\/api\/projects\/([^/]+)$/, (_, __, ___, [id]) => {
+      const p = projects.get(id);
+      if (!p) throw httpError(404, 'projeto não encontrado');
+      return { ...p, available: fs.existsSync(p.path) };
+    }, true],
+    ['GET', /^\/api\/projects\/([^/]+)\/files$/, (_, url, ___, [id]) => browse.listDir(reqProject(id), url.searchParams.get('path') || ''), true],
+    ['GET', /^\/api\/projects\/([^/]+)\/file$/, (_, url, ___, [id]) => browse.readFile(reqProject(id), url.searchParams.get('path')), true],
+    ['GET', /^\/api\/projects\/([^/]+)\/search$/, (_, url, ___, [id]) => browse.searchNames(reqProject(id), url.searchParams.get('q')), true],
+    ['GET', /^\/api\/projects\/([^/]+)\/sessions$/, (_, __, ___, [id]) => chatSessions.list(reqProject(id).id), true],
+    ['POST', /^\/api\/projects\/([^/]+)\/sessions$/, async (req, _url, res, [id]) => {
+      const project = reqProject(id); const body = await readBody(req);
+      res.statusCode = 201; return chatSessions.create(project.id, body.title || 'Nova conversa');
+    }, true],
+    ['GET', /^\/api\/projects\/([^/]+)\/chat$/, (_, url, ___, [id]) => {
+      const project = reqProject(id);
+      const sessionId = url.searchParams.get('sessionId') || null;
+      if (!chatSessions.get(project.id, sessionId)) throw httpError(404, 'sessão não encontrada neste projeto');
+      reconcile(project.id, sessionId); // pedidos terminados sem resposta (ex.: servidor reiniciado) são fechados aqui
+      const n = Number(url.searchParams.get('limit')) || 200;
+      return { messages: chat.list(project.id, { limit: Math.min(Math.max(n, 1), 1000), sessionId }) };
+    }, true],
+    // pedido do chat do projeto: histórico recente vira preâmbulo do objetivo (o motor vê o
+    // contexto real da conversa) e a missão roda com o workspace na pasta do projeto
+    ['POST', /^\/api\/projects\/([^/]+)\/chat$/, async (req, _url, res, [id]) => {
+      const project = reqProject(id);
+      const body = await readBody(req);
+      const text = String(body.text || '').trim();
+      const sessionId = body.sessionId || null;
+      const model = body.modelId ? modelCatalog.requireAvailable(body.modelId) : null;
+      if (!chatSessions.get(project.id, sessionId)) throw httpError(404, 'sessão não encontrada neste projeto');
+      if (!text) throw httpError(400, 'campo "text" obrigatório');
+      if (text.length > 4000) throw httpError(400, 'texto acima de 4000 caracteres');
+      const preamble = chat.contextPreamble(project.id, { sessionId });
+      const objective = [preamble, `Pedido atual: ${text}`].filter(Boolean).join('\n\n').slice(0, 4000);
+      const job = manager.create(objective, { projectId: project.id, modelId: model ? model.id : null });
+      const message = chat.append(project.id, { role: 'user', text, missionId: job.id, sessionId });
+      store.update(job.id, { chatMessageId: message.id, chatSessionId: sessionId });
+      chatSessions.touch(project.id, sessionId, text);
+      res.statusCode = 201;
+      return { message, job: store.get(job.id) };
+    }, true],
     ['GET', /^\/api\/missions$/, () => store.list()],
     ['POST', /^\/api\/missions$/, async (req, _url, res) => {
       const body = await readBody(req);
-      const job = manager.create(body.objective, { start: body.start !== false });
+      const model = body.modelId ? modelCatalog.requireAvailable(body.modelId) : null;
+      const job = manager.create(body.objective, { start: body.start !== false, projectId: body.projectId || null, modelId: model ? model.id : null });
       res.statusCode = 201;
       return job;
     }],
@@ -171,10 +288,10 @@ function createServer({ manager = new MissionManager() } = {}) {
         for (const e of store.readEvents(id, { afterSeq: after })) res.write(`id: ${e.seq}\nevent: mission\ndata: ${JSON.stringify(e)}\n\n`);
         return;
       }
-      for (const [method, re, handler] of routes) {
+      for (const [method, re, handler, skipIdCheck] of routes) {
         const m = url.pathname.match(re);
         if (!m || method !== req.method) continue;
-        if (m.slice(1).some((id) => !store.validId(id))) throw httpError(404, 'missão não encontrada');
+        if (!skipIdCheck && m.slice(1).some((id) => !store.validId(id))) throw httpError(404, 'missão não encontrada');
         const out = await handler(req, url, res, m.slice(1));
         if (out === null || out === undefined) throw httpError(404, 'não encontrado');
         return sendJSON(res, res.statusCode === 201 ? 201 : 200, out);
@@ -200,9 +317,10 @@ function createServer({ manager = new MissionManager() } = {}) {
     while (manager.running.size && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
     await Promise.race([closed, new Promise((r) => setTimeout(r, 500))]);
     unsubscribe();
+    unsubscribeChat();
   }
 
-  server.on('close', () => { unsubscribe(); manager.shutdown(); });
+  server.on('close', () => { unsubscribe(); unsubscribeChat(); manager.shutdown(); });
   return { server, manager, shutdown };
 }
 

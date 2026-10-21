@@ -30,11 +30,14 @@ function writeAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
-function create(objective) {
+function create(objective, { projectId = null, modelId = null } = {}) {
   const id = `mia_${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}`;
   const job = {
     id,
     objective: redact(objective),
+    projectId: projectId || null,
+    modelId: modelId || null,
+    workspace: null,
     status: 'CRIADA',
     createdAt: new Date().toISOString(),
     startedAt: null,

@@ -87,6 +87,41 @@ test('sync com patch inconsistente aborta sem tocar a instalação atual', { ski
   assert.ok(!fs.existsSync(path.join(paths.ROOT, '.sync-staging')));
 });
 
+test('verify sem o MASTER de origem cai em modo limitado: valida as cópias contra o lock', { skip: fs.existsSync(paths.LOCK_PATH) ? false : 'lock ausente (rode `minhaia sync`) — NÃO VALIDADO' }, () => {
+  const saved = process.env.MINHAIA_MASTER_DIR;
+  process.env.MINHAIA_MASTER_DIR = path.join(paths.ROOT, 'nao-existe-master-de-teste');
+  try {
+    const r = require('../src/master/verify').verify();
+    assert.strictEqual(r.limited, true);
+    assert.strictEqual(r.masterDir, null);
+    assert.strictEqual(r.masterGit, null);
+    assert.match(r.masterHead || '', /^[0-9a-f]{40}$/, 'HEAD registrado no lock');
+    assert.ok(r.files > 300);
+    assert.strictEqual(r.vendorTampered.length, 0);
+    assert.strictEqual(r.missingLocal.length, 0);
+    assert.strictEqual(r.ok, true, r.problems.join('; '));
+  } finally {
+    if (saved === undefined) delete process.env.MINHAIA_MASTER_DIR;
+    else process.env.MINHAIA_MASTER_DIR = saved;
+  }
+});
+
+test('pacote desktop exclui os links de runtime e nunca inclui segredos nem data/', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(paths.ROOT, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(paths.MANIFEST_PATH, 'utf8'));
+  const files = pkg.build.files;
+  for (const link of manifest.runtimeLinks.links) {
+    assert.ok(files.includes(`!${link.at}`), `pacote precisa excluir ${link.at}`);
+  }
+  assert.ok(files.includes('!**/.secrets/**'), 'pacote não pode incluir .secrets');
+  assert.ok(!files.includes('data/**'), 'pacote não pode incluir data/');
+});
+
+test('ensureRuntimeLinks não toca nos links existentes (instalação normal é no-op)', () => {
+  const { ensureRuntimeLinks } = require('../src/master/sync');
+  assert.deepStrictEqual(ensureRuntimeLinks({ runtimeLinks: { links: [] } }), []);
+});
+
 test('estado de runtime é link para data/, nunca diretório dentro de vendor/', { skip: SKIP_NO_MASTER }, () => {
   const memDir = path.join(paths.ENGINE_DIR, 'memoria', 'dados');
   assert.ok(fs.lstatSync(memDir).isSymbolicLink());

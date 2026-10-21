@@ -18,25 +18,13 @@ function masterGitStatus(masterDir) {
  * - masterDrift: arquivo de origem mudou/sumiu no MASTER desde o último sync.
  * - vendorTampered: cópia local diferente do que o sync gerou.
  * - masterGit: `git status --porcelain` do MASTER (prova de que continua intocado).
+ * - limited: MASTER de origem ausente (app empacotado / pasta movida) — sem origem não há
+ *   como provar o somente-leitura dela; a verificação fica limitada às cópias geradas,
+ *   conferidas contra os hashes do lock (HEAD vem do próprio lock).
  */
 function verify() {
-  const result = { ok: true, problems: [], masterDir: null, masterHead: null, lockHead: null, files: 0, masterDrift: [], vendorTampered: [], missingLocal: [], unexpectedLocal: [], badLinks: [], masterGit: null };
+  const result = { ok: true, problems: [], masterDir: null, masterHead: null, lockHead: null, files: 0, masterDrift: [], vendorTampered: [], missingLocal: [], unexpectedLocal: [], badLinks: [], masterGit: null, limited: false };
   const masterDir = resolveMasterDir();
-  if (!masterDir) {
-    result.ok = false;
-    result.problems.push('MASTER não encontrado (defina MINHAIA_MASTER_DIR)');
-    return result;
-  }
-  result.masterDir = masterDir;
-  result.masterHead = masterGitHead(masterDir);
-  result.masterGit = masterGitStatus(masterDir);
-  if (!result.masterGit.ok) {
-    result.ok = false;
-    result.problems.push(`não foi possível rodar git status no MASTER (${result.masterGit.error}) — prova de somente leitura indisponível`);
-  } else if (!result.masterGit.clean) {
-    result.ok = false;
-    result.problems.push(`MASTER tem alterações locais (git status não vazio): ${result.masterGit.lines.join(' | ')}`);
-  }
 
   if (!fs.existsSync(paths.LOCK_PATH)) {
     result.ok = false;
@@ -45,16 +33,34 @@ function verify() {
   }
   const lock = JSON.parse(fs.readFileSync(paths.LOCK_PATH, 'utf8'));
   result.lockHead = lock.masterGitHead;
-  if (lock.masterGitHead && result.masterHead && lock.masterGitHead !== result.masterHead) {
-    result.ok = false;
-    result.problems.push(`MASTER HEAD mudou (${lock.masterGitHead.slice(0, 12)} → ${result.masterHead.slice(0, 12)}) — revise e rode \`minhaia sync\``);
+
+  if (masterDir) {
+    result.masterDir = masterDir;
+    result.masterHead = masterGitHead(masterDir);
+    result.masterGit = masterGitStatus(masterDir);
+    if (!result.masterGit.ok) {
+      result.ok = false;
+      result.problems.push(`não foi possível rodar git status no MASTER (${result.masterGit.error}) — prova de somente leitura indisponível`);
+    } else if (!result.masterGit.clean) {
+      result.ok = false;
+      result.problems.push(`MASTER tem alterações locais (git status não vazio): ${result.masterGit.lines.join(' | ')}`);
+    }
+    if (lock.masterGitHead && result.masterHead && lock.masterGitHead !== result.masterHead) {
+      result.ok = false;
+      result.problems.push(`MASTER HEAD mudou (${lock.masterGitHead.slice(0, 12)} → ${result.masterHead.slice(0, 12)}) — revise e rode \`minhaia sync\``);
+    }
+  } else {
+    result.limited = true;
+    result.masterHead = lock.masterGitHead || null;
   }
 
   for (const [dest, e] of Object.entries(lock.files)) {
     result.files += 1;
-    const srcAbs = path.join(masterDir, e.from);
-    if (!fs.existsSync(srcAbs)) result.masterDrift.push({ file: e.from, kind: 'removido' });
-    else if (sha256(fs.readFileSync(srcAbs)) !== e.sha256Source) result.masterDrift.push({ file: e.from, kind: 'alterado' });
+    if (masterDir) {
+      const srcAbs = path.join(masterDir, e.from);
+      if (!fs.existsSync(srcAbs)) result.masterDrift.push({ file: e.from, kind: 'removido' });
+      else if (sha256(fs.readFileSync(srcAbs)) !== e.sha256Source) result.masterDrift.push({ file: e.from, kind: 'alterado' });
+    }
 
     const destAbs = path.join(paths.ROOT, dest);
     if (!fs.existsSync(destAbs)) result.missingLocal.push(dest);
@@ -78,7 +84,11 @@ function verify() {
     try { st = fs.lstatSync(at); } catch { /* ausente */ }
     const want = path.join(paths.ROOT, link.target);
     if (!st || !st.isSymbolicLink()) result.badLinks.push(`${link.at}: não é link`);
-    else if (path.resolve(path.dirname(at), fs.readlinkSync(at)) !== want) result.badLinks.push(`${link.at}: aponta para ${fs.readlinkSync(at)} (esperado ${link.target})`);
+    else {
+      // junction do Windows pode vir com prefixo \\?\ — normaliza antes de comparar
+      const resolved = path.resolve(path.dirname(at), fs.readlinkSync(at).replace(/^\\\\\?\\/, ''));
+      if (resolved !== path.resolve(want)) result.badLinks.push(`${link.at}: aponta para ${fs.readlinkSync(at)} (esperado ${link.target})`);
+    }
   }
 
   if (result.unexpectedLocal.length) { result.ok = false; result.problems.push(`${result.unexpectedLocal.length} arquivo(s) nos destinos gerados que não vieram do sync`); }

@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { fork } = require('child_process');
+const { fork, spawnSync } = require('child_process');
 const store = require('./store');
+const projects = require('../projects/store');
 const { paths } = require('../config');
 
 const WORKER = path.join(__dirname, 'worker.js');
@@ -23,10 +24,15 @@ const ENV_ALLOW = new Set([
 function workerEnv() {
   /** @type {NodeJS.ProcessEnv} */
   const env = {};
+  // No Windows os nomes vêm com capitalização mista ("Path", "SystemRoot"); a comparação é
+  // case-insensitive e vale a primeira grafia da lista como canônica (no Windows casa sem distinção).
+  const allow = new Map();
+  for (const k of ENV_ALLOW) if (!allow.has(k.toUpperCase())) allow.set(k.toUpperCase(), k);
   for (const [k, v] of Object.entries(process.env)) {
-    if (!(ENV_ALLOW.has(k) || k.startsWith('MINHAIA_'))) continue;
+    const canonical = allow.get(k.toUpperCase());
+    if (!(canonical || k.startsWith('MINHAIA_'))) continue;
     // proxy com usuário:senha na URL não chega ao worker (nem ao código gerado)
-    env[k] = /proxy$/i.test(k) && v ? v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, '$1') : v;
+    env[canonical || k] = /proxy$/i.test(k) && v ? v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, '$1') : v;
   }
   return env;
 }
@@ -41,26 +47,45 @@ function alive(pid) {
   } catch { return true; } // sem /proc (não-Linux): só o sinal 0 disponível
 }
 
-/** Instante de início do processo (campo 22 de /proc/<pid>/stat) — distingue PID reaproveitado. */
+/** Instante de início do processo (campo 22 de /proc/<pid>/stat; no Windows, ticks de criação):
+ * distingue PID reaproveitado. Assinatura estável entre chamadas (mesmo processo = mesmo valor). */
 function procStart(pid) {
+  if (process.platform === 'win32') {
+    // Windows não tem /proc: usa o instante de criação do processo via .NET (ticks, invariante
+    // de locale). É mais caro que o /proc, mas só é consultado ao lançar/recuperar missão.
+    try {
+      const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `try { [System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.Ticks } catch { }`,
+      ], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+      const out = String(r.stdout || '').trim();
+      return /^\d+$/.test(out) ? out : null;
+    } catch { return null; }
+  }
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null;
   } catch { return null; }
 }
 
-/** Mesmo processo de antes? Sem /proc (não-Linux) só o PID pode ser comparado. */
+/** Mesmo processo de antes? Sem instante de início (registro antigo/sem permissão), só o PID conta. */
 function sameProcess(pid, start) {
   if (!alive(pid)) return false;
   if (!start) return true;
   return procStart(pid) === start;
 }
 
-/** Mata o grupo de processos do worker (worker + tudo que o motor criou: node do LLM, servidores). */
+/** Mata a árvore de processos do worker (worker + tudo que o motor criou: node do LLM, servidores). */
 function killGroup(child, signal) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    // Windows não tem grupos de processo POSIX: o taskkill encerra a ÁRVORE inteira (/T) à força (/F)
+    try {
+      spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      return;
+    } catch { /* sem taskkill: cai no kill direto */ }
+  }
   try {
-    if (process.platform !== 'win32') process.kill(-child.pid, signal);
-    else child.kill(signal);
+    process.kill(-child.pid, signal);
   } catch {
     try { child.kill(signal); } catch { /* já saiu */ }
   }
@@ -115,10 +140,19 @@ class MissionManager {
    * Encerra o grupo que sobrou de um worker antigo. Se o líder (worker) morreu, nenhum processo
    * novo pode ter PGID igual ao PID dele enquanto restarem membros do grupo; se o PID está vivo,
    * só mata se for o MESMO processo (instante de início igual) — nunca um PID reaproveitado.
+   * No Windows (sem grupos POSIX): taskkill /T só quando o worker vivo é o mesmo processo; se o
+   * worker já morreu, não há raiz confiável para a árvore (os netos ficam para o fim do sistema).
    */
   killStaleGroup(job) {
-    if (!job.pid || process.platform === 'win32') return;
-    if (alive(job.pid) && !(job.workerStart && procStart(job.pid) === job.workerStart)) return;
+    if (!job.pid) return;
+    const sameWorker = !!job.workerStart && procStart(job.pid) === job.workerStart;
+    if (process.platform === 'win32') {
+      if (alive(job.pid) && sameWorker) {
+        try { spawnSync('taskkill', ['/PID', String(job.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* já saiu */ }
+      }
+      return;
+    }
+    if (alive(job.pid) && !sameWorker) return;
     try { process.kill(-job.pid, 'SIGKILL'); } catch { /* grupo já não existe */ }
   }
 
@@ -129,6 +163,7 @@ class MissionManager {
       entry.killed = true; // o exit que chegar depois não reescreve o status nem duplica 'finished'
       clearTimeout(entry.timer);
       clearTimeout(entry.killTimer);
+      clearTimeout(entry.exitTimer);
       killGroup(entry.child, 'SIGKILL');
       this.running.delete(id);
       store.update(id, { status: 'INTERROMPIDA', finishedAt: new Date().toISOString(), reason: 'encerrado à força', pid: null });
@@ -171,13 +206,18 @@ class MissionManager {
     return this.queue.length + this.running.size;
   }
 
-  create(objective, { start = true } = {}) {
+  create(objective, { start = true, projectId = null, modelId = null } = {}) {
     const text = String(objective || '').trim();
     if (!text) throw err(400, 'objetivo vazio');
     if (text.length > 4000) throw err(400, 'objetivo acima de 4000 caracteres');
+    if (projectId !== null && projectId !== undefined && projectId !== '') {
+      if (!projects.get(projectId)) throw err(404, `projeto não encontrado: ${projectId}`);
+    } else {
+      projectId = null;
+    }
     if (start && this.pendingCount() >= this.maxPending) throw err(429, `limite de ${this.maxPending} missões na fila/em execução atingido`);
-    const job = store.create(text);
-    this.record(job.id, 'created', { objective: job.objective });
+    const job = store.create(text, { projectId, modelId });
+    this.record(job.id, 'created', { objective: job.objective, projectId, modelId });
     if (start) this.start(job.id);
     return store.get(job.id);
   }
@@ -212,9 +252,25 @@ class MissionManager {
 
   launch(id, resume) {
     const job = store.get(id);
+    // missão vinculada a um projeto: a pasta escolhida pelo usuário vira o workspace real da
+    // missão (env MINHAIA_PROJECT_DIR no worker; patch de manifesto em executor/core/workspace.js)
+    const project = job.projectId ? projects.get(job.projectId) : null;
+    if (job.projectId && (!project || !fs.existsSync(project.path))) {
+      const reason = project ? `a pasta do projeto não existe mais: ${project.path}` : `projeto ${job.projectId} não encontrado no registro`;
+      store.update(id, { status: 'BLOQUEADA', finishedAt: new Date().toISOString(), reason, pid: null });
+      this.safeRecord(id, 'blocked', { reason });
+      this.safeRecord(id, 'finished', { status: 'BLOQUEADA', reason });
+      this.pump();
+      return;
+    }
+    const env = workerEnv();
+    // app desktop empacotado: o binário do Electron só se comporta como Node com esta flag —
+    // sem ela o fork do worker (e o node do código gerado) reabriria a janela do app
+    if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
+    if (project) env.MINHAIA_PROJECT_DIR = project.path;
     // processo em grupo próprio: cancelar/timeout encerra também os filhos criados pelo motor
-    const child = fork(WORKER, [], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: workerEnv(), detached: process.platform !== 'win32' });
-    const entry = { child, timer: null, killTimer: null, finalStatus: null, reason: null, done: false, killed: false };
+    const child = fork(WORKER, [], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env, detached: process.platform !== 'win32' });
+    const entry = { child, timer: null, killTimer: null, exitTimer: null, finalStatus: null, reason: null, done: false, killed: false };
     this.running.set(id, entry);
     let finished = false;
     const finish = (status, patch = {}, fromDone = false) => {
@@ -222,6 +278,7 @@ class MissionManager {
       finished = true;
       clearTimeout(entry.timer);
       clearTimeout(entry.killTimer);
+      clearTimeout(entry.exitTimer);
       killGroup(child, 'SIGKILL'); // nada do grupo sobrevive ao fim da missão
       this.running.delete(id);
       // conclusão real reportada pelo worker prevalece sobre um cancelamento que chegou depois
@@ -231,8 +288,9 @@ class MissionManager {
       this.safeRecord(id, 'finished', { status: finalStatus, reason });
       this.pump();
     };
-    store.update(id, { status: 'EXECUTANDO', startedAt: job.startedAt || new Date().toISOString(), finishedAt: null, pid: child.pid, workerStart: procStart(child.pid), owner: this.owner() });
+    store.update(id, { status: 'EXECUTANDO', startedAt: job.startedAt || new Date().toISOString(), finishedAt: null, pid: child.pid, workerStart: procStart(child.pid), owner: this.owner(), workspace: project ? project.path : null });
     this.record(id, 'started', { resume, pid: child.pid });
+    if (project) this.record(id, 'project', { id: project.id, name: project.name, path: project.path });
 
     child.on('message', (/** @type {any} */ msg) => {
       if (!msg || typeof msg !== 'object') return;
@@ -245,7 +303,7 @@ class MissionManager {
         } else if (msg.kind === 'done') {
           entry.done = true;
           const o = msg.outcome || {};
-          const cur = store.get(id);
+          const cur = store.get(id) || {};
           finish(o.status || 'FALHA', { engineMissionId: o.engineMissionId || cur.engineMissionId, engineState: o.engineState || engineMissionState(o.engineMissionId || cur.engineMissionId) || cur.engineState, reason: o.reason || null }, true);
         }
       } catch (e) {
@@ -258,8 +316,13 @@ class MissionManager {
     });
     pipeLog(child.stdout, 'stdout');
     pipeLog(child.stderr, 'stderr');
-    // saída sem mensagem "done" nunca é sucesso
-    child.on('exit', (code, signal) => finish('FALHA', { reason: `worker saiu sem concluir (code=${code}, signal=${signal})` }));
+    // Saída sem mensagem "done" nunca é sucesso. No Windows o 'exit' pode chegar antes de as
+    // últimas mensagens IPC (result/done) serem lidas: dá uma janela curta para elas antes de
+    // declarar FALHA — se o 'done' chegar nesse meio-tempo, ele prevalece.
+    child.on('exit', (code, signal) => {
+      entry.exitTimer = setTimeout(() => finish('FALHA', { reason: `worker saiu sem concluir (code=${code}, signal=${signal})` }), 300);
+      if (entry.exitTimer.unref) entry.exitTimer.unref();
+    });
     child.on('error', (e) => finish('FALHA', { reason: e.message }));
 
     entry.timer = setTimeout(() => {
@@ -267,7 +330,7 @@ class MissionManager {
       this.terminate(id, 'TEMPO_ESGOTADO', `tempo limite de ${Math.round(this.timeoutMs / 1000)} s esgotado`);
     }, this.timeoutMs);
 
-    child.send({ kind: 'start', objective: job.objective, resumeEngineMissionId: resume ? job.engineMissionId : null });
+    child.send({ kind: 'start', objective: job.objective, modelId: job.modelId || null, resumeEngineMissionId: resume ? job.engineMissionId : null });
   }
 
   terminate(id, finalStatus, reason) {
@@ -278,8 +341,12 @@ class MissionManager {
     store.update(id, { status: 'CANCELANDO', reason });
     try { entry.child.send({ kind: 'stop', reason }); } catch { /* canal fechado */ }
     // primeiro só o worker: o motor para sem "ver" a morte dos comandos (estado fica retomável);
-    // o grupo inteiro morre no fim da missão (finish) ou pelo prazo abaixo
-    try { entry.child.kill('SIGTERM'); } catch { /* já saiu */ }
+    // o grupo inteiro morre no fim da missão (finish) ou pelo prazo abaixo.
+    // No Windows não existe sinal com handler (kill = TerminateProcess): o 'stop' por IPC já
+    // dispara a parada graciosa do worker (worker.js), e o taskkill /T /F do killTimer é o prazo.
+    if (process.platform !== 'win32') {
+      try { entry.child.kill('SIGTERM'); } catch { /* já saiu */ }
+    }
     entry.killTimer = setTimeout(() => killGroup(entry.child, 'SIGKILL'), 5000);
   }
 

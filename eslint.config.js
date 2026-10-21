@@ -2,7 +2,7 @@ const js = require('@eslint/js');
 const globals = require('globals');
 
 module.exports = [
-  { ignores: ['vendor/**', 'data/**', 'node_modules/**', '.claude/agents/**', '.claude/skills/**'] },
+  { ignores: ['vendor/**', 'data/**', 'node_modules/**', 'dist/**', '.claude/agents/**', '.claude/skills/**'] },
   js.configs.recommended,
   {
     files: ['**/*.js'],

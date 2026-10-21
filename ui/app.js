@@ -56,21 +56,54 @@ const state = {
   es: null,
   tab: 'conversa',
   files: [],
+  projects: [],
+  activeProject: null,
+  sessions: [],
+  activeSessionId: null,
+  chat: [],
+  models: [],
+  metrics: null,
+  browse: { path: '', entries: [] },
+  sending: false,
 };
 
 // ------------------------------------------------------------------ sistema
+// Como configurar provedor: painel aberto pelo chip de LLM (mostra o caminho real do .env).
+function showKeysGuide() {
+  const s = state.system || {};
+  const envFile = (s.providers && s.providers.envFile) || '.secrets/.env';
+  const chaves = (s.providers && s.providers.missing) || [];
+  const g = $('#keys-guide');
+  const bridge = /** @type {{ openSecretsFolder?: () => Promise<{ ok: boolean, error: string | null, dir: string }> }} */ (/** @type {any} */ (window).minhaiaDesktop);
+  const desktop = bridge && bridge.openSecretsFolder;
+  g.replaceChildren(
+    h('div', { class: 'label' }, 'Configurar provedor de LLM'),
+    h('p', {}, 'Grave uma chave no arquivo abaixo, no formato NOME=valor (sem export). Uma chave já libera as missões reais.'),
+    h('code', { class: 'env-path' }, envFile),
+    h('p', {}, `Chaves aceitas: ${chaves.length ? chaves.join(', ') : '—'}`),
+    h('p', { class: 'hint' }, 'A IA nunca lê nem grava valores de chave: quem lê este arquivo é o gateway do motor. O caminho some ao fechar este painel.'),
+    h('div', { class: 'composer-actions' },
+      desktop ? h('button', { type: 'button', onclick: () => bridge.openSecretsFolder() }, 'Abrir pasta .secrets') : null,
+      h('button', { type: 'button', onclick: () => { g.hidden = true; } }, 'Fechar')),
+  );
+  g.hidden = false;
+}
+
 async function loadSystem() {
   const el = $('#system');
   try {
     const s = await api('/api/system');
     state.system = s;
     el.replaceChildren(
-      chip(s.master.ok ? 'MASTER íntegro' : `Integridade: ${s.master.problems.length} problema(s)`, s.master.ok ? 'ok' : 'err', s.master.ok ? `HEAD ${String(s.master.head).slice(0, 12)} · ${s.master.files} arquivos verificados` : s.master.problems.join(' | ')),
+      chip(s.master.ok ? (s.master.limited ? 'MASTER íntegro (cópias)' : 'MASTER íntegro') : `Integridade: ${s.master.problems.length} problema(s)`, s.master.ok ? 'ok' : 'err',
+        s.master.ok
+          ? (s.master.limited ? `MASTER de origem ausente — verificado contra o lock · ${s.master.files} arquivos` : `HEAD ${String(s.master.head).slice(0, 12)} · ${s.master.files} arquivos verificados`)
+          : s.master.problems.join(' | ')),
       chip(`${s.agents} agentes`, 'info'),
       chip(`${s.skills} Skills`, 'info'),
       s.providers.configured.length
-        ? chip(`LLM: ${s.providers.configured.join(', ')}`, 'ok')
-        : chip('Sem provedor de LLM — missões reais bloqueadas', 'err', 'Grave uma chave (GROQ_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY ou NINEROUTER_API_KEY) em .secrets/.env e recarregue'),
+        ? h('button', { type: 'button', class: 'chip ok as-link', title: 'como configurar ou trocar de provedor', onclick: showKeysGuide }, `LLM: ${s.providers.configured.join(', ')}`)
+        : h('button', { type: 'button', class: 'chip err as-link', title: 'ver como configurar', onclick: showKeysGuide }, 'Sem provedor de LLM — clique para configurar'),
     );
   } catch (e) {
     el.replaceChildren(chip(`API indisponível: ${e.message}`, 'err'));
@@ -93,16 +126,335 @@ function renderMissionList() {
       h('span', {}, chip(m.status, STATUS_KIND[m.status] || ''), ' ', h('span', { class: 'hint' }, fmtTime(m.createdAt)))))));
 }
 
+// ------------------------------------------------------------------ projetos (pastas reais do usuário)
+const PROJECT_KEY = 'minhaia.activeProject';
+const MODEL_KEY = 'minhaia.modelId';
+
+async function loadProjects() {
+  state.projects = await api('/api/projects');
+  renderProjects();
+  renderProjectSelector();
+}
+
+function renderProjects() {
+  const ul = $('#projects');
+  const q = ($('#project-search')?.value || '').toLowerCase();
+  const rows = state.projects.filter((p) => !q || `${p.name} ${p.path}`.toLowerCase().includes(q));
+  if (!rows.length) { ul.replaceChildren(h('li', { class: 'muted' }, q ? 'nenhum resultado' : 'nenhum projeto ainda')); return; }
+    const sorted = [...rows].sort((a, b) => state.projectSortNewest === false
+      ? a.name.localeCompare(b.name) : (b.lastUsedAt || b.addedAt || '').localeCompare(a.lastUsedAt || a.addedAt || ''));
+  ul.replaceChildren(...sorted.map((p) => h('li', {},
+    h('button', {
+      type: 'button', class: 'proj', title: p.path,
+      'aria-current': state.activeProject && state.activeProject.id === p.id ? 'true' : 'false',
+      onclick: () => selectProject(p),
+    },
+    h('span', { class: 'proj-name' }, p.available === false ? `${p.name} (pasta indisponível)` : p.name),
+    h('span', { class: 'proj-path' }, p.path)),
+    h('button', { type: 'button', class: 'danger proj-remove', title: 'Remover do registro (os arquivos NÃO são apagados)', onclick: () => removeProject(p) }, '×'))));
+}
+
+async function removeProject(p) {
+  if (!confirm(`Remover "${p.name}" do registro?\nOs arquivos da pasta NÃO são apagados.`)) return;
+  try { await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE', body: '{}' }); } catch (e) { alert(e.message); }
+  if (state.activeProject && state.activeProject.id === p.id) {
+    state.activeProject = null;
+    localStorage.removeItem(PROJECT_KEY);
+    $('#chat').hidden = true;
+    $('#empty').hidden = false;
+  }
+  await loadProjects().catch(() => {});
+}
+
+async function selectProject(p) {
+  if (state.activeProject?.id !== p.id) {
+    try { await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'PUT', body: '{}' }); } catch { /* registro local segue disponível */ }
+  }
+  state.activeProject = p;
+  $('#active-folder').textContent = p.name;
+  $('#active-folder').title = p.path;
+  $('#workspace-project').textContent = p.name;
+  $('#workspace-project').title = p.path;
+  document.body.classList.remove('sidebar-open');
+  $('#active-folder').textContent = p.name;
+  $('#active-folder').title = p.path;
+  $('#command-project').value = p.id;
+  localStorage.setItem(PROJECT_KEY, p.id);
+  if (state.es) { state.es.close(); state.es = null; }
+  state.currentId = null;
+  state.detail = null;
+  $('#empty').hidden = true;
+  $('#mission').hidden = true;
+  $('#chat').hidden = false;
+  renderMissionList();
+  $('#empty').hidden = true;
+  $('#mission').hidden = true;
+  $('#chat').hidden = false;
+  $('#browse').hidden = true;
+  $('#browse-search').value = '';
+  state.browse = { path: '', entries: [] };
+  renderProjects();
+  await loadSessions();
+}
+
+const sessionKey = (projectId) => `minhaia.session.${projectId}`;
+async function loadSessions() {
+  if (!state.activeProject) return;
+  const projectId = state.activeProject.id;
+  state.sessions = await api(`/api/projects/${encodeURIComponent(projectId)}/sessions`);
+  const wanted = localStorage.getItem(sessionKey(projectId));
+  let session = state.sessions.find((s) => s.id === wanted) || state.sessions[0];
+  if (!session) {
+    session = await api(`/api/projects/${encodeURIComponent(projectId)}/sessions`, { method: 'POST', body: JSON.stringify({ title: 'Nova conversa' }) });
+    state.sessions = [session];
+  }
+  await selectSession(session, false);
+}
+
+function renderSessions() {
+  const list = $('#sessions');
+  if (!state.activeProject) { list.replaceChildren(h('li', { class: 'muted' }, 'selecione um projeto')); return; }
+  if (!state.sessions.length) { list.replaceChildren(h('li', { class: 'muted' }, 'nenhuma conversa')); return; }
+  list.replaceChildren(...state.sessions.map((s) => h('li', {}, h('button', {
+    type: 'button', class: 'session', 'aria-current': (s.id || '') === (state.activeSessionId || '') ? 'true' : 'false',
+    onclick: () => selectSession(s), title: s.title,
+  }, h('span', { class: 'session-name' }, s.title), h('span', { class: 'session-time' }, fmtTime(s.updatedAt))))));
+}
+
+async function selectSession(session, updateRoute = true) {
+  if (!state.activeProject) return;
+  state.activeSessionId = session.id || null;
+  if (state.activeSessionId) localStorage.setItem(sessionKey(state.activeProject.id), state.activeSessionId);
+  renderSessions();
+  $('#chat-session-title').textContent = session.title || 'Histórico anterior';
+  $('#chat-context').textContent = state.activeProject.name;
+  $('#chat').hidden = false;
+  $('#mission').hidden = true;
+  $('#empty').hidden = true;
+  state.currentId = null;
+  state.detail = null;
+  renderChatHeader();
+  await loadChat().catch((e) => { $('#chat-error').textContent = e.message; $('#chat-error').hidden = false; });
+  if (updateRoute) $('#chat-input').focus();
+}
+
+async function createSession() {
+  if (!state.activeProject) return;
+  const s = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/sessions`, { method: 'POST', body: JSON.stringify({ title: 'Nova conversa' }) });
+  state.sessions.unshift(s);
+  await selectSession(s);
+}
+
+function renderChatHeader() {
+  const p = state.activeProject;
+  if (!p) return;
+  $('#chat-title').textContent = p.name;
+  $('#chat-meta').replaceChildren(
+    chip('Pasta do projeto', '', `pasta real: ${p.path}`),
+    p.available === false ? chip('pasta indisponível', 'err', 'a pasta foi movida, renomeada ou removida — remova e adicione de novo') : chip('disponível', 'ok'),
+    chip(`${state.chat.length} mensagem(ns)`, ''),
+  );
+}
+
+const desktopBridge = /** @type {{ chooseFolder?: () => Promise<string | null> }} */ (/** @type {any} */ (window).minhaiaDesktop);
+const windowBridge = /** @type {{ minimizeWindow?: () => Promise<void>, toggleMaximizeWindow?: () => Promise<boolean>, closeWindow?: () => Promise<void> }} */ (/** @type {any} */ (window).minhaiaDesktop);
+if (windowBridge?.minimizeWindow && windowBridge?.toggleMaximizeWindow && windowBridge?.closeWindow) {
+  $('#window-minimize').disabled = false; $('#window-maximize').disabled = false; $('#window-close').disabled = false;
+  $('#window-minimize').addEventListener('click', () => windowBridge.minimizeWindow());
+  $('#window-maximize').addEventListener('click', () => windowBridge.toggleMaximizeWindow());
+  $('#window-close').addEventListener('click', () => windowBridge.closeWindow());
+}
+const pickFolderBtn = $('#project-pick');
+if (desktopBridge && typeof desktopBridge.chooseFolder === 'function') {
+  pickFolderBtn.addEventListener('click', async () => {
+    const err = $('#project-error');
+    err.hidden = true;
+    try {
+      const dir = await desktopBridge.chooseFolder();
+      if (!dir) return;
+      $('#project-path').value = dir;
+      $('#project-add-form').requestSubmit();
+    } catch (e) {
+      err.textContent = e instanceof Error ? e.message : String(e);
+      err.hidden = false;
+    }
+  });
+} else {
+  pickFolderBtn.addEventListener('click', () => {
+    $('#project-add-form').hidden = false;
+    $('#project-path').focus();
+  });
+}
+
+$('#project-add-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const err = $('#project-error');
+  err.hidden = true;
+  const p = $('#project-path').value.trim();
+  if (!p) return;
+  $('#project-add-btn').disabled = true;
+  try {
+    const project = await api('/api/projects', { method: 'POST', body: JSON.stringify({ path: p }) });
+    $('#project-path').value = '';
+    await loadProjects();
+    selectProject(state.projects.find((x) => x.id === project.id) || project);
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    $('#project-add-btn').disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------ chat do projeto
+async function loadChat() {
+  if (!state.activeProject) return;
+  const id = state.activeProject.id;
+  const sid = state.activeSessionId;
+  const suffix = sid ? `?sessionId=${encodeURIComponent(sid)}` : '';
+  const r = await api(`/api/projects/${encodeURIComponent(id)}/chat${suffix}`);
+  if (!state.activeProject || state.activeProject.id !== id || state.activeSessionId !== sid) return;
+  state.chat = r.messages;
+  renderChatHeader();
+  renderChat();
+}
+
+function missionChip(missionId) {
+  const m = state.missions.find((x) => x.id === missionId);
+  const status = m ? m.status : '…';
+  return h('button', { type: 'button', class: 'link', title: 'abrir a missão deste pedido', onclick: () => selectMission(missionId) },
+    chip(status, STATUS_KIND[status] || '', missionId));
+}
+
+function providerDiagnosis(text) {
+  if (/\b429\b|rate.?limit|quota/i.test(text)) return 'Diagnóstico: o provedor informou limite de taxa ou cota (HTTP 429). Confira a cota do provedor e as tentativas/fallbacks na aba Execução.';
+  if (/\b401\b|invalid[_ ]?api[_ ]?key|unauthorized/i.test(text)) return 'Diagnóstico: o provedor recusou a credencial. Verifique a configuração local e tente novamente; nenhum valor de chave é mostrado aqui.';
+  if (/\b403\b|forbidden/i.test(text)) return 'Diagnóstico: o provedor negou acesso a este modelo ou recurso. Confira as permissões e o catálogo do provedor.';
+  if (/\b5\d\d\b|gateway timeout|temporarily unavailable/i.test(text)) return 'Diagnóstico: o provedor retornou erro de serviço. Consulte as tentativas registradas antes de reenviar.';
+  return '';
+}
+
+function renderChat() {
+  const root = $('#chat-messages');
+  if (!state.chat.length) {
+    root.replaceChildren(h('p', { class: 'muted' }, 'Sem mensagens ainda. Descreva o que você quer fazer neste projeto — cada pedido vira uma missão real que lê e escreve nesta pasta.'));
+    return;
+  }
+  root.replaceChildren(...state.chat.map((m) => h('div', { class: `msg ${m.role}` },
+    h('div', { class: 'who' }, h('span', {}, m.role === 'user' ? 'Você' : 'MinhaIA'), h('span', {}, fmtTime(m.ts))),
+    h('p', {}, m.text),
+    m.role === 'assistant' && providerDiagnosis(m.text) ? h('p', { class: 'provider-diagnosis' }, providerDiagnosis(m.text)) : null,
+    m.missionId ? missionChip(m.missionId) : null)));
+  root.scrollTop = root.scrollHeight;
+}
+
+$('#chat-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  if (state.sending) return;
+  const err = $('#chat-error');
+  err.hidden = true;
+  const text = $('#chat-input').value.trim();
+  if (!text || !state.activeProject) return;
+  $('#chat-send').disabled = true;
+  state.sending = true;
+  try {
+    const pending = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/chat`, { method: 'POST', body: JSON.stringify({ text, sessionId: state.activeSessionId, modelId: selectedModelId() }) });
+    $('#chat-input').value = '';
+    await Promise.all([loadChat(), loadMissions()]);
+    $('#chat-state').textContent = `Tarefa ${pending.job.status.toLowerCase()} · abra o identificador na mensagem para acompanhar os detalhes`;
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    state.sending = false;
+    $('#chat-send').disabled = false;
+  }
+});
+$('#chat-input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('#chat-form').requestSubmit(); }
+});
+
+// ------------------------------------------------------------------ arquivos do projeto
+$('#btn-browse').addEventListener('click', () => {
+  const b = $('#browse');
+  b.hidden = !b.hidden;
+  if (!b.hidden) loadBrowse(state.browse.path || '').catch((e) => { $('#browse-view').textContent = e.message; });
+});
+
+$('#browse-up').addEventListener('click', () => {
+  const p = state.browse.path;
+  if (!p) return;
+  loadBrowse(p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '').catch(() => {});
+});
+
+$('#browse-search').addEventListener('keydown', async (ev) => {
+  if (ev.key !== 'Enter') return;
+  const q = $('#browse-search').value.trim();
+  if (!state.activeProject || q.length < 2) return;
+  try {
+    const r = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/search?q=${encodeURIComponent(q)}`);
+    $('#browse-path').textContent = `busca: ${r.query}${r.truncated ? ' (truncada)' : ''}`;
+    $('#browse-list').replaceChildren(...(r.hits.length
+      ? r.hits.map((x) => h('li', {}, h('button', { type: 'button', title: x.path, onclick: () => openBrowseFile(x.path) }, x.path)))
+      : [h('li', { class: 'muted' }, 'nada encontrado')]));
+    $('#browse-view').textContent = 'selecione um arquivo';
+  } catch (e) {
+    $('#browse-view').textContent = e.message;
+  }
+});
+
+async function loadBrowse(p) {
+  if (!state.activeProject) return;
+  const r = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/files?path=${encodeURIComponent(p || '')}`);
+  state.browse = { path: r.path, entries: r.entries };
+  $('#browse-path').textContent = `/${r.path || ''}`;
+  $('#browse-up').disabled = !r.path;
+  $('#browse-view').textContent = 'selecione um arquivo';
+  $('#browse-list').replaceChildren(...r.entries.map((e) => h('li', {},
+    h('button', {
+      type: 'button',
+      class: e.dir ? 'dir' : '',
+      title: e.dir ? e.path : `${e.bytes} bytes · ${e.modifiedAt || ''}`,
+      onclick: () => (e.dir ? loadBrowse(e.path).catch(() => {}) : openBrowseFile(e.path)),
+    }, e.dir ? `${e.name}/` : e.name))));
+}
+
+async function openBrowseFile(p) {
+  if (!state.activeProject) return;
+  const view = $('#browse-view');
+  view.textContent = 'carregando…';
+  try {
+    const f = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/file?path=${encodeURIComponent(p)}`);
+    view.textContent = f.binary ? `(arquivo binário, ${f.bytes} bytes)` : f.content;
+  } catch (e) {
+    view.textContent = e.message;
+  }
+}
+
 // ------------------------------------------------------------------ nova missão
 $('#new-mission').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  if (state.sending) return;
   const err = $('#form-error');
   err.hidden = true;
   const objective = $('#objective').value.trim();
   if (!objective) return;
   $('#send').disabled = true;
+  state.sending = true;
   try {
-    const job = await api('/api/missions', { method: 'POST', body: JSON.stringify({ objective }) });
+    if (state.activeProject) {
+      const pending = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/chat`, { method: 'POST', body: JSON.stringify({ text: objective, sessionId: state.activeSessionId }) });
+      $('#objective').value = '';
+      state.chat = [...state.chat, pending.message];
+      renderChat();
+      state.sessions = await api(`/api/projects/${encodeURIComponent(state.activeProject.id)}/sessions`);
+      renderSessions();
+      await loadMissions();
+      $('#chat').hidden = false; $('#empty').hidden = true; $('#mission').hidden = true;
+      $('#chat-state').textContent = `Tarefa ${pending.job.status.toLowerCase()} · acompanhe o progresso nos detalhes da missão`;
+      return;
+    }
+    const job = await api('/api/missions', { method: 'POST', body: JSON.stringify({ objective, modelId: selectedModelId(), projectId: state.activeProject?.id || null }) });
     $('#objective').value = '';
     await loadMissions();
     selectMission(job.id);
@@ -110,8 +462,12 @@ $('#new-mission').addEventListener('submit', async (ev) => {
     err.textContent = e.message;
     err.hidden = false;
   } finally {
+    state.sending = false;
     $('#send').disabled = false;
   }
+});
+$('#objective').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('#new-mission').requestSubmit(); }
 });
 
 // ------------------------------------------------------------------ missão selecionada
@@ -123,6 +479,7 @@ async function selectMission(id) {
   $('#file-view').textContent = 'selecione um arquivo';
   renderMissionList();
   $('#empty').hidden = true;
+  $('#chat').hidden = true;
   $('#mission').hidden = false;
   await refreshDetail();
   const es = new EventSource(`/api/missions/${encodeURIComponent(id)}/events`);
@@ -188,7 +545,8 @@ function renderDetail() {
     banner.hidden = false;
   } else if (['FALHA', 'TEMPO_ESGOTADO', 'INTERROMPIDA'].includes(job.status) && job.reason) {
     banner.className = 'banner err';
-    banner.textContent = job.reason;
+    const diagnosis = providerDiagnosis(job.reason);
+    banner.textContent = diagnosis ? `${diagnosis} Detalhe registrado: ${job.reason}` : job.reason;
     banner.hidden = false;
   } else if (d.testStub) {
     banner.className = 'banner info';
@@ -460,6 +818,94 @@ async function loadObservability() {
 }
 const refreshObsSoon = debounce(loadObservability, 800);
 
+async function renderProjectSelector() {
+  const select = $('#command-project');
+  if (!select) return;
+  const current = state.activeProject?.id || '';
+  select.replaceChildren(h('option', { value: '' }, 'Sem projeto'), ...state.projects.map((p) => h('option', { value: p.id }, p.name)));
+  select.value = current;
+}
+
+async function loadModels() {
+  try {
+    state.models = await api('/api/models');
+    for (const select of [$('#model-select'), $('#chat-model-select')]) {
+      const saved = localStorage.getItem(MODEL_KEY) || 'auto';
+      select.replaceChildren(h('option', { value: 'auto' }, 'Automático · orquestrador'), ...state.models.map((m) => h('option', {
+        value: m.id, disabled: !m.available, title: m.unavailableReason || `${m.provider} · ${m.model}`,
+      }, `${m.id} · ${m.provider}${m.available ? '' : ' · indisponível'}`)));
+      select.value = [...select.options].some((o) => o.value === saved && !o.disabled) ? saved : 'auto';
+      select.addEventListener('change', () => {
+        const other = select.id === 'model-select' ? $('#chat-model-select') : $('#model-select');
+        other.value = select.value;
+        localStorage.setItem(MODEL_KEY, select.value);
+      });
+    }
+  } catch (e) { $('#models-list').replaceChildren(h('p', { class: 'muted' }, `Catálogo indisponível: ${e.message}`)); }
+}
+
+function selectedModelId() {
+  const id = $('#chat').hidden ? $('#model-select').value : $('#chat-model-select').value;
+  return id === 'auto' ? null : id;
+}
+
+async function loadMetrics() {
+  const period = $('#metrics-period').value;
+  try {
+    const m = state.metrics = await api(`/api/metrics?period=${encodeURIComponent(period)}`);
+    $('#metric-sessions').textContent = String(m.sessions);
+    $('#metric-messages').textContent = String(m.messages);
+    $('#metric-days').textContent = String(m.activeDays);
+    $('#metric-peak').textContent = m.peakHour === null ? '—' : `${String(m.peakHour).padStart(2, '0')}:00`;
+    $('#metric-model').textContent = m.topModel || '—';
+    $('#metric-model-caption').textContent = m.topModel ? `${m.models.find((x) => x.id === m.topModel)?.count || 0} chamadas registradas` : 'sem chamadas registradas';
+    const grid = $('#activity-grid');
+    grid.replaceChildren(...m.activity.map((d) => {
+      const level = d.count === 0 ? 0 : d.count === 1 ? 1 : d.count <= 3 ? 2 : d.count <= 6 ? 3 : 4;
+      return h('span', { class: `level-${level}`, title: `${d.date}: ${d.count} missão(ões)`, 'aria-label': `${d.date}: ${d.count} missões` });
+    }));
+    $('#activity-range').textContent = period === 'all' ? 'Todo o histórico disponível' : `Últimos ${period.replace('d', ' dias')}`;
+    const used = $('#used-models');
+    used.replaceChildren(...(m.models.length ? m.models.map((x) => h('article', { class: 'model-card' }, h('b', {}, x.id), h('small', {}, `${x.count} chamada(s) no período`))) : [h('p', { class: 'muted' }, 'Nenhuma chamada de modelo registrada neste período.')]));
+  } catch (e) { $('#activity-grid').replaceChildren(h('span', { class: 'muted', title: e.message }, 'Métricas indisponíveis')); }
+}
+
+$('#metrics-period').addEventListener('change', loadMetrics);
+document.querySelectorAll('[data-dashboard-tab]').forEach((button) => button.addEventListener('click', () => {
+  const models = button.getAttribute('data-dashboard-tab') === 'models';
+  document.querySelectorAll('[data-dashboard-tab]').forEach((tab) => { tab.classList.toggle('active', tab === button); tab.setAttribute('aria-selected', tab === button ? 'true' : 'false'); });
+  $('#dashboard-overview').hidden = models;
+  $('#dashboard-models').hidden = !models;
+}));
+
+$('#project-search').addEventListener('input', renderProjects);
+$('#project-sort').addEventListener('click', () => { state.projectSortNewest = state.projectSortNewest === false; renderProjects(); });
+$('#project-add-open').addEventListener('click', () => { $('#project-add-form').hidden = false; $('#project-path').focus(); });
+$('#personalize').addEventListener('click', showKeysGuide);
+$('#session-new').addEventListener('click', () => createSession().catch((e) => alert(e.message)));
+$('#btn-new').addEventListener('click', async () => {
+  if (state.activeProject) { await createSession().catch((e) => alert(e.message)); return; }
+  if (state.es) { state.es.close(); state.es = null; }
+  state.currentId = null; state.detail = null;
+  $('#mission').hidden = true; $('#chat').hidden = true; $('#empty').hidden = false; $('#objective').focus();
+});
+$('#sidebar-toggle').addEventListener('click', () => {
+  if (matchMedia('(max-width: 760px)').matches) document.body.classList.toggle('sidebar-open');
+  else document.body.classList.toggle('sidebar-collapsed');
+});
+$('#mobile-sidebar-toggle').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
+$('#command-project').addEventListener('change', () => {
+  const project = state.projects.find((p) => p.id === $('#command-project').value);
+  if (project) selectProject(project);
+  else { state.activeProject = null; state.activeSessionId = null; $('#active-folder').textContent = 'Nenhuma pasta selecionada'; $('#workspace-project').textContent = 'Nenhuma pasta'; $('#chat').hidden = true; $('#mission').hidden = true; $('#empty').hidden = false; localStorage.removeItem(PROJECT_KEY); }
+});
+
+document.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => {
+  const field = state.activeProject ? $('#chat-input') : $('#objective');
+  field.value = button.getAttribute('data-prompt');
+  field.focus();
+}));
+
 function openGlobalStream() {
   const live = $('#live');
   const es = new EventSource('/api/stream');
@@ -469,6 +915,16 @@ function openGlobalStream() {
     const e = JSON.parse(msg.data);
     refreshObsSoon();
     if (e.jobId !== state.currentId && ['created', 'finished', 'started', 'blocked'].includes(e.type)) refreshMissions();
+    const currentJob = state.missions.find((m) => m.id === e.jobId);
+    if (currentJob && currentJob.projectId === state.activeProject?.id && !$('#chat').hidden) {
+      $('#chat-state').textContent = e.type === 'finished' ? `Missão ${e.status || currentJob.status.toLowerCase()}` : `${e.phase || e.message || e.type.replaceAll('_', ' ')} · em andamento`;
+    if (e.type === 'finished') {
+      state.missions = state.missions.map((m) => m.id === e.jobId ? { ...m, status: e.status || m.status } : m);
+      renderMissionList(); renderChat();
+      loadMissions().then(() => loadChat()).catch(() => {});
+      loadSessions().catch(() => {});
+    }
+    }
   });
 }
 
@@ -477,7 +933,13 @@ function openGlobalStream() {
   await loadSystem();
   await loadMissions().catch(() => {});
   await loadObservability();
+  await loadModels();
   openGlobalStream();
   setInterval(loadObservability, 15000); // só para a contagem de cooldown; o resto é por evento
-  if (state.missions[0]) selectMission(state.missions[0].id);
+  await loadProjects().catch(() => {});
+  const saved = localStorage.getItem(PROJECT_KEY);
+  const project = state.projects.find((p) => p.id === saved && p.available !== false);
+  if (project) selectProject(project);
+  else if (state.missions[0]) selectMission(state.missions[0].id);
+  else if (state.projects[0] && state.projects[0].available !== false) selectProject(state.projects[0]);
 })();

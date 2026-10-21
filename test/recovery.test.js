@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { SKIP_NO_MASTER, isolateRuntime, STUB } = require('./helpers');
 
 const LINUX = process.platform === 'linux';
@@ -13,6 +13,15 @@ const alive = (pid) => {
   try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); return s.slice(s.lastIndexOf(')') + 2, s.lastIndexOf(')') + 3) !== 'Z'; } catch { return true; }
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Mata a árvore do processo no teste (taskkill /T no Windows; grupo POSIX fora dele). */
+function killTree(pid) {
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* já morto */ }
+    return;
+  }
+  try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* já morto */ } }
+}
 
 function withJobsDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minhaia-rec-'));
@@ -38,11 +47,11 @@ test('recuperação: dono morto → INTERROMPIDA com evento finished', { skip: S
   assert.ok(store.readEvents(job.id).some((e) => e.type === 'finished' && e.status === 'INTERROMPIDA'));
 });
 
-test('recuperação: dono vivo (mesmo processo) → missão intocada', { skip: SKIP_NO_MASTER || (!LINUX && 'usa /proc') }, async (t) => {
+test('recuperação: dono vivo (mesmo processo) → missão intocada', { skip: SKIP_NO_MASTER }, async (t) => {
   const store = withJobsDir(t);
   const { MissionManager, procStart } = require('../src/missions/manager');
   const other = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
-  t.after(() => other.kill('SIGKILL'));
+  t.after(() => killTree(other.pid));
   await wait(200);
   const job = store.create('x');
   store.update(job.id, { status: 'EXECUTANDO', owner: { pid: other.pid, id: 'outro', start: procStart(other.pid) } });
@@ -50,7 +59,7 @@ test('recuperação: dono vivo (mesmo processo) → missão intocada', { skip: S
   assert.strictEqual(store.get(job.id).status, 'EXECUTANDO');
 });
 
-test('recuperação: outro gerenciador vivo no MESMO processo → missão intocada', { skip: SKIP_NO_MASTER || (!LINUX && 'usa /proc') }, (t) => {
+test('recuperação: outro gerenciador vivo no MESMO processo → missão intocada', { skip: SKIP_NO_MASTER }, (t) => {
   const store = withJobsDir(t);
   const { MissionManager, procStart } = require('../src/missions/manager');
   const job = store.create('x');
@@ -59,11 +68,11 @@ test('recuperação: outro gerenciador vivo no MESMO processo → missão intoca
   assert.strictEqual(store.get(job.id).status, 'EXECUTANDO');
 });
 
-test('recuperação: PID do dono reaproveitado (início diferente) → INTERROMPIDA', { skip: SKIP_NO_MASTER || (!LINUX && 'usa /proc') }, async (t) => {
+test('recuperação: PID do dono reaproveitado (início diferente) → INTERROMPIDA', { skip: SKIP_NO_MASTER }, async (t) => {
   const store = withJobsDir(t);
   const { MissionManager } = require('../src/missions/manager');
   const other = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
-  t.after(() => other.kill('SIGKILL'));
+  t.after(() => killTree(other.pid));
   await wait(200);
   const job = store.create('x');
   store.update(job.id, { status: 'EXECUTANDO', owner: { pid: other.pid, id: 'antigo', start: 'outro-instante' } });
@@ -87,11 +96,11 @@ test('recuperação: grupo órfão de worker morto é encerrado', { skip: SKIP_N
   assert.ok(!alive(childPid), 'filho órfão do worker morto precisa ser encerrado');
 });
 
-test('recuperação: dono morto e worker vivo (mesmo início) → grupo inteiro encerrado', { skip: SKIP_NO_MASTER || (!LINUX && 'grupos POSIX') }, async (t) => {
+test('recuperação: dono morto e worker vivo (mesmo início) → grupo inteiro encerrado', { skip: SKIP_NO_MASTER }, async (t) => {
   const store = withJobsDir(t);
   const { MissionManager, procStart } = require('../src/missions/manager');
   const { leader, childPid } = await spawnGroup();
-  t.after(() => { try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* já morto */ } });
+  t.after(() => killTree(leader.pid));
   const job = store.create('x');
   store.update(job.id, { status: 'EXECUTANDO', owner: { pid: 999999, id: 'morto' }, pid: leader.pid, workerStart: procStart(leader.pid) });
   new MissionManager();
@@ -100,11 +109,11 @@ test('recuperação: dono morto e worker vivo (mesmo início) → grupo inteiro 
   assert.ok(!alive(leader.pid) && !alive(childPid), 'worker e filhos do dono morto precisam ser encerrados');
 });
 
-test('recuperação: nunca mata grupo de PID reaproveitado (vivo, início diferente)', { skip: SKIP_NO_MASTER || (!LINUX && 'grupos POSIX') }, async (t) => {
+test('recuperação: nunca mata grupo de PID reaproveitado (vivo, início diferente)', { skip: SKIP_NO_MASTER }, async (t) => {
   const store = withJobsDir(t);
   const { MissionManager } = require('../src/missions/manager');
   const { leader, childPid } = await spawnGroup();
-  t.after(() => { try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* já morto */ } });
+  t.after(() => killTree(leader.pid));
   const job = store.create('x');
   store.update(job.id, { status: 'EXECUTANDO', owner: { pid: 999999, id: 'morto' }, pid: leader.pid, workerStart: 'instante-antigo' });
   new MissionManager();
