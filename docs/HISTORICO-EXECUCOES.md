@@ -15,9 +15,9 @@
 
 - **Autenticação:** `gh auth status` confirmou `sameque00-source` com escopo `repo`; permissão `ADMIN` verificada na origem e no destino.
 - **Destino:** consulta autenticada confirmou que `sameque00-source/minhaia-desktop` não existia. Criado como público, igual à origem.
-- **Segurança:** revisão da árvore de publicação, nomes de arquivos e padrões comuns de segredos não encontrou credenciais. `.mcp.json` não continha segredos; `.secrets/`, `data/`, `vendor/` gerado, dependências e `dist/` foram excluídos. `gitleaks` não está instalado, limitação registrada. `npm audit` listou 8 moderadas na árvore dev/build; `npm audit --omit=dev` encontrou zero.
+- **Segurança:** Gitleaks v8.30.1 instalado temporariamente fora do projeto; zero achados no histórico/refspec Git e na árvore exata publicada. GitHub Secret Scanning e Push Protection ligados, sem alertas na origem e no destino. Uma varredura ampla do checkout encontrou padrões em `.secrets/` e conteúdo gerado/ignorado; esses caminhos não foram publicados. `npm audit` listou 8 moderadas na árvore dev/build; `npm audit --omit=dev` encontrou zero.
 - **Backup:** `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration`; cópia com 311 arquivos e bundle de 411856 bytes; `git bundle verify` OK.
-- **Publicação:** commit `682fba334b0477c03e19f97d64ba8e8e7daa9bd6`, com 57 arquivos, enviado sem force push para `main`. Branch padrão confirmada `main`.
+- **Publicação:** commit `682fba334b0477c03e19f97d64ba8e8e7daa9bd6`, com 57 arquivos, enviado sem force push para `main`. Branch padrão confirmada `main`. Duas branches preexistentes migradas com seus SHAs; a visual possui um commit exclusivo. Sem tags, releases ou issues/PRs; wiki não existe.
 - **Clone limpo:** `C:\Users\sameq\Downloads\MinhaIA-migration-check`, com screenshot, referência HTML, relatórios e histórico. `npm ci` OK. `npm run check`: 152 passou, 0 falhou, 6 ignorados; `sync` e `verify` OK; `doctor` identificou ausência esperada de chave de provedor local.
-- **Origem antiga:** mantida intacta, pois não havia scanner dedicado para comprovar o gate completo de segredo. Ver `docs/RELATORIO-MIGRACAO-REPOSITORIO.md`.
+- **Origem antiga:** ainda preservada durante a checagem final do backup completo das refs e clone das branches. Ver `docs/RELATORIO-MIGRACAO-REPOSITORIO.md`.
 - **Estado final:** o checkout local foi alinhado à branch `main`, `origin` aponta para `https://github.com/sameque00-source/minhaia-desktop.git`, e a origem antiga permanece intacta enquanto falta scanner dedicado de segredos.

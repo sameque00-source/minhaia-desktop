@@ -66,26 +66,25 @@ A tela final substitui os números de exemplo por uma saudação e ações que p
 - A API continua somente em loopback; o sync/verify confirmou a integridade do MASTER e não houve edição manual em `vendor/master`.
 - Os testes da suíte cobrem validação de pasta, traversal, links, sandbox e redação de conteúdo sensível.
 - Varredura local de padrões comuns de chaves encontrou zero caminhos correspondentes na árvore de trabalho e nas 10 revisões locais. Não foram encontrados nomes de arquivos `.env`, `.pem`, `.key`, `.p12` ou `.pfx` no histórico local.
-- `gitleaks` não está instalado; a varredura por padrões é limitada e não equivale a uma auditoria completa antes de publicação. A credencial está em armazenamento local ignorado e não foi copiada para o novo repositório.
+- Auditoria posterior à publicação com Gitleaks v8.30.1: zero achados na história Git/refspec e zero na extração `git archive` da árvore publicada (82 arquivos). GitHub Secret Scanning e Push Protection estão habilitados, com zero alertas na origem e destino. A varredura não filtrada do checkout encontrou padrões em `.secrets/` e conteúdo gerado de Skills/vendor/dist; esses caminhos foram excluídos do envio e seus valores não foram exibidos nem registrados.
 
 ## 7. Git, backup e GitHub
 
 - Em 21/10/2026, a autenticação `gh` foi confirmada para `sameque00-source`, com escopo `repo` e permissão `ADMIN` nos repositórios.
 - A origem `sameque00-source/Minha-ia` era pública. O destino inexistente `sameque00-source/minhaia-desktop` foi criado público para manter a visibilidade.
 - O commit `682fba334b0477c03e19f97d64ba8e8e7daa9bd6` contém a árvore local preservada (57 arquivos alterados/adicionados); foi publicado em `main` sem force push. O histórico anterior da branch de origem foi preservado.
+- As branches existentes na origem foram preservadas com os mesmos nomes e SHAs no destino: `claude/elegant-lovelace-slefxv` (`78cae09...`) e `reference/minhaia-ui-visual` (`8f03b77...`). A segunda tem um commit visual exclusivo. `main` contém a aplicação validada e é a branch padrão. Origem sem tags, releases, issues/PRs; wiki inexistente.
 - A clonagem limpa em `C:\Users\sameq\Downloads\MinhaIA-migration-check` confirmou o commit, histórico, relatórios, screenshot e referência HTML. `npm ci` instalou as dependências e `npm run check`, `sync` e `verify` passaram na cópia; `doctor` apontou ausência de chaves nesse clone limpo, como esperado, sem copiar credenciais.
 - `origin` do checkout original foi alterado para `https://github.com/sameque00-source/minhaia-desktop.git` somente após essas verificações. A branch de trabalho local continua `claude/elegant-lovelace-slefxv`; o remoto oficial publica a branch padrão `main`.
-- Backup adicional, feito antes da publicação, foi verificado em `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration`: 311 arquivos na cópia de trabalho e bundle Git de 411856 bytes, com `git bundle verify` bem-sucedido.
-- A revisão de padrões nos arquivos a publicar e dos nomes de arquivos sensíveis não encontrou credenciais. `.mcp.json` não contém valores secretos; `.secrets/` e `data/` foram excluídos. `gitleaks` não está instalado, portanto a varredura não certifica ausência absoluta de segredos.
-- `npm audit` registrou 8 vulnerabilidades moderadas apenas na árvore de desenvolvimento/build; `npm audit --omit=dev` encontrou zero. O relatório da migração mantém a origem intacta enquanto a varredura dedicada de segredos não estiver disponível.
+- Backup pré-publicação: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration` (311 arquivos e bundle 411856 bytes, validado). Backup final com todos os commits/branches: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021`.
+- `.mcp.json` não contém credenciais; `.secrets/`, `data/` e arquivos gerados não foram publicados.
+- `npm audit` registrou 8 vulnerabilidades moderadas apenas em ferramentas dev/build; `npm audit --omit=dev` encontrou zero.
 
 ## 8. Limitações e pendências
 
-1. Instalar/executar `gitleaks` ou scanner equivalente sobre o commit enviado e o histórico pertinente; manter a origem antiga se esse gate não puder ser concluído.
-2. Implementar esforço de raciocínio apenas quando o contrato do motor/adaptadores transportar um parâmetro oficial por modelo/provedor e houver testes dessa transmissão.
-3. Executar uma missão completa com provedor real em um projeto temporário autorizado; o teste limpo E2E usa `TEST-STUB` e o clone não recebeu credenciais.
-4. Reavaliar as 8 vulnerabilidades moderadas restritas a dependências de desenvolvimento/build e a opção de `asar`/ícone antes de distribuição.
+1. Executar uma missão completa com provedor real em um projeto temporário autorizado; o teste limpo E2E usa `TEST-STUB` e o clone não recebeu credenciais.
+2. Reavaliar as 8 vulnerabilidades moderadas restritas a dependências de desenvolvimento/build e a opção de `asar`/ícone antes de distribuição.
 
 ## 9. Próximo passo
 
-O destino oficial e o `origin` local já apontam ao novo repositório. A origem antiga foi mantida intacta por prudência enquanto falta um scanner dedicado de segredos.
+O destino oficial é `minhaia-desktop`; o `origin` local aponta a ele. A origem permanece até a reconfirmação final do backup completo e da clonagem das branches preservadas.
