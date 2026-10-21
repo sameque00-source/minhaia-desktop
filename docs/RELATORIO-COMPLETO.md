@@ -76,7 +76,7 @@ A tela final substitui os números de exemplo por uma saudação e ações que p
 - As branches existentes na origem foram preservadas com os mesmos nomes e SHAs no destino: `claude/elegant-lovelace-slefxv` (`78cae09...`) e `reference/minhaia-ui-visual` (`8f03b77...`). A segunda tem um commit visual exclusivo. `main` contém a aplicação validada e é a branch padrão. Origem sem tags, releases, issues/PRs; wiki inexistente.
 - A clonagem limpa em `C:\Users\sameq\Downloads\MinhaIA-migration-check` confirmou o commit, histórico, relatórios, screenshot e referência HTML. `npm ci` instalou as dependências e `npm run check`, `sync` e `verify` passaram na cópia; `doctor` apontou ausência de chaves nesse clone limpo, como esperado, sem copiar credenciais.
 - `origin` do checkout original foi alterado para `https://github.com/sameque00-source/minhaia-desktop.git` somente após essas verificações. A branch de trabalho local continua `claude/elegant-lovelace-slefxv`; o remoto oficial publica a branch padrão `main`.
-- Backup pré-publicação: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration` (311 arquivos e bundle 411856 bytes, validado). Backup final com todos os commits/branches: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021`.
+- Backup pré-publicação: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration` (311 arquivos e bundle 411856 bytes, validado). Backup final com todos os commits/branches: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021` (311 arquivos e bundle de 422055 bytes, validado).
 - `.mcp.json` não contém credenciais; `.secrets/`, `data/` e arquivos gerados não foram publicados.
 - `npm audit` registrou 8 vulnerabilidades moderadas apenas em ferramentas dev/build; `npm audit --omit=dev` encontrou zero.
 
@@ -87,4 +87,4 @@ A tela final substitui os números de exemplo por uma saudação e ações que p
 
 ## 9. Próximo passo
 
-O destino oficial é `minhaia-desktop`; o `origin` local aponta a ele. A origem permanece até a reconfirmação final do backup completo e da clonagem das branches preservadas.
+O destino oficial é `minhaia-desktop`; o `origin` local aponta a ele. A exclusão da origem foi tentada após os gates e recusada por falta do escopo OAuth `delete_repo`; aguarda a confirmação do escopo solicitada pela CLI. Até lá, a origem permanece intacta.

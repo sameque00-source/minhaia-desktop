@@ -26,7 +26,7 @@ Destino oficial: `sameque00-source/minhaia-desktop`
 ## Backup
 
 - Backup pré-publicação: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-20261021-001034Z-migration` (311 arquivos e bundle de 411856 bytes, bundle validado).
-- Backup final com todas as branches e commits de migração: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021` (criar e validar após o último commit de relatório). Cópia exclui `.secrets/`, `data/`, dependências, `dist/` e `vendor/` gerado; bundle contém todas as refs relevantes.
+- Backup final com todas as branches e commits de migração: `C:\Users\sameq\Downloads\MinhaIA-backups\minhaia-final-migration-20261021` (311 arquivos, bundle Git de 422055 bytes, validado; contém as branches de origem e destino). Cópia exclui `.secrets/`, `data/`, dependências, `dist/` e `vendor/` gerado.
 
 ## Clonagem limpa e verificações
 
@@ -41,7 +41,7 @@ Destino oficial: `sameque00-source/minhaia-desktop`
 ## Estado do `origin` e da origem antiga
 
 - Após a validação da clonagem, o checkout de trabalho foi alinhado à branch `main`, configurado para acompanhar `origin/main`, e `origin` aponta para `https://github.com/sameque00-source/minhaia-desktop.git`. `git status` está limpo e o destino confirma `main` como HEAD padrão.
-- A exclusão da origem só será realizada depois que o backup final, todas as refs, o scanner e o clone forem reconfirmados. A origem permanece intacta até esse último gate.
+- Todos os gates técnicos foram comprovados: backup final, branches/histórico, Gitleaks, GitHub Secret Scanning, clone e verificações. A tentativa de exclusão recebeu HTTP 403 porque o token `gh` não possui o escopo `delete_repo`; `gh auth refresh -h github.com -s delete_repo` está aguardando confirmação no fluxo de device login. Nenhuma exclusão foi efetuada. A origem continua intacta enquanto esse escopo não for concedido.
 
 ## Histórico de execuções
 
