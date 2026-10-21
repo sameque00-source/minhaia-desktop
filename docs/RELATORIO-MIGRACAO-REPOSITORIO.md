@@ -38,7 +38,7 @@ Destino oficial: `sameque00-source/minhaia-desktop`
 
 ## Estado do `origin` e da origem antiga
 
-- O checkout de trabalho ainda está na branch `claude/elegant-lovelace-slefxv`. Após a validação acima, seu `origin` será apontado ao destino oficial `https://github.com/sameque00-source/minhaia-desktop.git`; a branch publicada padrão permanece `main`.
+- Após a validação da clonagem, o checkout de trabalho foi renomeado para `main`, configurado para acompanhar `origin/main`, e o `origin` foi confirmado em `https://github.com/sameque00-source/minhaia-desktop.git`. `git status` ficou limpo e `git ls-remote` confirmou `HEAD`/`main` no commit `c46a6a7106760c71ed101adb44b5e8087c2118fb`.
 - **A origem antiga não foi excluída e permanece intacta.** O gate faltante é uma varredura com ferramenta dedicada de segredos, indisponível neste ambiente. Manter a origem preserva reversibilidade; não há necessidade operacional de apagá-la para que o novo repositório seja oficial.
 
 ## Histórico de execuções

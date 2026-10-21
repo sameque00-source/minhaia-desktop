@@ -20,4 +20,4 @@
 - **Publicação:** commit `682fba334b0477c03e19f97d64ba8e8e7daa9bd6`, com 57 arquivos, enviado sem force push para `main`. Branch padrão confirmada `main`.
 - **Clone limpo:** `C:\Users\sameq\Downloads\MinhaIA-migration-check`, com screenshot, referência HTML, relatórios e histórico. `npm ci` OK. `npm run check`: 152 passou, 0 falhou, 6 ignorados; `sync` e `verify` OK; `doctor` identificou ausência esperada de chave de provedor local.
 - **Origem antiga:** mantida intacta, pois não havia scanner dedicado para comprovar o gate completo de segredo. Ver `docs/RELATORIO-MIGRACAO-REPOSITORIO.md`.
-- **Próximo:** atualizar o `origin` local ao destino e conferir branch/URL. O destino oficial é `minhaia-desktop`; não excluir a origem antiga até o gate de segurança estar comprovado.
+- **Estado final:** o checkout local foi alinhado à branch `main`, `origin` aponta para `https://github.com/sameque00-source/minhaia-desktop.git`, e a origem antiga permanece intacta enquanto falta scanner dedicado de segredos.
